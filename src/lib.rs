@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 
 pub mod builder;
-pub use builder::{Builder, builder};
+pub use builder::{Builder, HONEYCOMB_SERVER_EU, HONEYCOMB_SERVER_US, builder};
 pub use reqwest::Url;
 
 fn event_channel(

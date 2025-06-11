@@ -6,8 +6,8 @@ use crate::{
 };
 use std::collections::HashMap;
 
-const HONEYCOMB_SERVER: &'static str = "https://api.honeycomb.io/";
-const HONEYCOMB_SERVER_EU: &'static str = "https://api.eu1.honeycomb.io/";
+pub const HONEYCOMB_SERVER_US: &'static str = "https://api.honeycomb.io/";
+pub const HONEYCOMB_SERVER_EU: &'static str = "https://api.eu1.honeycomb.io/";
 
 /// Builder for constructing a [`Layer`] and its corresponding
 /// [`BackgroundTask`].
@@ -37,15 +37,22 @@ impl std::fmt::Display for AddHeaderError {
 impl std::error::Error for AddHeaderError {}
 
 #[derive(Debug)]
-pub struct InvalidDatasetError(String);
+pub struct InvalidEndpointConfig {
+    api_host: String,
+    dataset_slug: String,
+}
 
-impl std::fmt::Display for InvalidDatasetError {
+impl std::fmt::Display for InvalidEndpointConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid dataset name {:?}", self.0)
+        write!(
+            f,
+            "cannot build Honeycomb endpoint from API host {:?} and dataset {:?}",
+            self.api_host, self.dataset_slug
+        )
     }
 }
 
-impl std::error::Error for InvalidDatasetError {}
+impl std::error::Error for InvalidEndpointConfig {}
 
 impl Builder {
     /// Set the logical name of the service, using the `service.name` field as defined
@@ -102,8 +109,9 @@ impl Builder {
     /// Names may contain URL-encoded spaces or other special characters, but not
     /// URL-encoded slashes. For example, "My%20Dataset" will show up in the UI as "My
     /// Dataset".
-    pub fn build_us(
+    pub fn build(
         self,
+        api_host: &str,
         dataset_slug: &str,
     ) -> Result<
         (
@@ -111,50 +119,22 @@ impl Builder {
             BackgroundTask,
             BackgroundTaskController,
         ),
-        InvalidDatasetError,
+        InvalidEndpointConfig,
     > {
         // endpoint is {api_host}/1/batch/{datasetSlug}
         // ref: https://api-docs.honeycomb.io/api/events/createevents
-        let endpoint = Url::parse(HONEYCOMB_SERVER)
-            .unwrap()
-            .join("1/batch")
-            .unwrap()
-            .join(dataset_slug)
-            .map_err(|_| InvalidDatasetError(dataset_slug.to_owned()))?;
-        Ok(self.build_with_endpoint(endpoint))
-    }
-
-    /// Build using the EU instance.
-    /// `dataset_slug` is the case-insensitive Honeycomb dataset to send events to.
-    /// Names may contain URL-encoded spaces or other special characters, but not
-    /// URL-encoded slashes. For example, "My%20Dataset" will show up in the UI as "My Dataset".
-    ///
-    /// Panics if resulting URL fails to parse. For better error handling, construct the
-    /// URL directly and use [`Self::build_with_endpoint`].
-    pub fn build_eu(
-        self,
-        dataset_slug: &str,
-    ) -> Result<
-        (
-            crate::layer::Layer,
-            BackgroundTask,
-            BackgroundTaskController,
-        ),
-        InvalidDatasetError,
-    > {
-        // endpoint is {api_host}/1/batch/{datasetSlug}
-        // ref: https://api-docs.honeycomb.io/api/events/createevents
-        let endpoint = Url::parse(HONEYCOMB_SERVER_EU)
-            .unwrap()
-            .join("1/batch")
-            .unwrap()
-            .join(dataset_slug)
-            .map_err(|_| InvalidDatasetError(dataset_slug.to_owned()))?;
-        Ok(self.build_with_endpoint(endpoint))
+        let endpoint = Url::parse(api_host)
+            .and_then(|host| host.join("1/batch"))
+            .and_then(|endpoint| endpoint.join(dataset_slug))
+            .map_err(|_| InvalidEndpointConfig {
+                api_host: api_host.to_string(),
+                dataset_slug: dataset_slug.to_string(),
+            })?;
+        Ok(self.build_with_custom_endpoint(endpoint))
     }
 
     /// Build using a custom "Create Events" endpoint [`Url`].
-    pub fn build_with_endpoint(
+    pub fn build_with_custom_endpoint(
         self,
         honeycomb_endpoint_url: Url,
     ) -> (

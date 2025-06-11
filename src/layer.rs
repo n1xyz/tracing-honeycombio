@@ -312,7 +312,10 @@ mod tests {
         // "name" field is based on line number so cannot be easily checked
         assert_eq!(
             ev_map.get("target"),
-            Some(&json!(format!("{}::tests", env!("CARGO_CRATE_NAME"))))
+            Some(&json!(format!(
+                "{}::layer::tests",
+                env!("CARGO_CRATE_NAME")
+            )))
         );
 
         assert_eq!(ev_map.get("event_field"), Some(&json!(e_val)));

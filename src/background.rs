@@ -181,7 +181,7 @@ impl Future for BackgroundTask {
                                 error_count = self.backoff_count + 1,
                                 ?backoff_time,
                                 error = %e,
-                                "couldn't send logs to loki",
+                                "couldn't send logs to honeycomb",
                             );
                             default_guard =
                                 tracing::subscriber::set_default(NoSubscriber::default());
