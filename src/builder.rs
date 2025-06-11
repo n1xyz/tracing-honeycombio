@@ -1,21 +1,18 @@
-use reqwest::header::HeaderName;
+use reqwest::header::{self, HeaderMap, HeaderName};
 
-use crate::Url;
+use crate::{
+    Url,
+    background::{BackgroundTask, BackgroundTaskController},
+};
 use std::collections::HashMap;
 
 const HONEYCOMB_SERVER: &'static str = "https://api.honeycomb.io/";
 const HONEYCOMB_SERVER_EU: &'static str = "https://api.eu1.honeycomb.io/";
 
-pub struct BuilderInit {
-    dataset: String,
-    api_key: String,
-}
-
 /// Builder for constructing a [`Layer`] and its corresponding
 /// [`BackgroundTask`].
 pub struct Builder {
     pub service_name: Option<String>,
-    pub api_endpoint: Url,
     // TODO: custom value type
     pub extra_fields: HashMap<String, serde_json::Value>,
     pub http_headers: reqwest::header::HeaderMap,
@@ -49,8 +46,6 @@ impl std::fmt::Display for InvalidDatasetError {
 }
 
 impl std::error::Error for InvalidDatasetError {}
-
-type BuildResult = ();
 
 impl Builder {
     /// Set the logical name of the service, using the `service.name` field as defined
@@ -107,7 +102,17 @@ impl Builder {
     /// Names may contain URL-encoded spaces or other special characters, but not
     /// URL-encoded slashes. For example, "My%20Dataset" will show up in the UI as "My
     /// Dataset".
-    pub fn build_us(self, dataset_slug: &str) -> Result<BuildResult, InvalidDatasetError> {
+    pub fn build_us(
+        self,
+        dataset_slug: &str,
+    ) -> Result<
+        (
+            crate::layer::Layer,
+            BackgroundTask,
+            BackgroundTaskController,
+        ),
+        InvalidDatasetError,
+    > {
         // endpoint is {api_host}/1/batch/{datasetSlug}
         // ref: https://api-docs.honeycomb.io/api/events/createevents
         let endpoint = Url::parse(HONEYCOMB_SERVER)
@@ -126,7 +131,17 @@ impl Builder {
     ///
     /// Panics if resulting URL fails to parse. For better error handling, construct the
     /// URL directly and use [`Self::build_with_endpoint`].
-    pub fn build_eu(self, dataset_slug: &str) -> Result<BuildResult, InvalidDatasetError> {
+    pub fn build_eu(
+        self,
+        dataset_slug: &str,
+    ) -> Result<
+        (
+            crate::layer::Layer,
+            BackgroundTask,
+            BackgroundTaskController,
+        ),
+        InvalidDatasetError,
+    > {
         // endpoint is {api_host}/1/batch/{datasetSlug}
         // ref: https://api-docs.honeycomb.io/api/events/createevents
         let endpoint = Url::parse(HONEYCOMB_SERVER_EU)
@@ -139,16 +154,20 @@ impl Builder {
     }
 
     /// Build using a custom "Create Events" endpoint [`Url`].
-    pub fn build_with_endpoint(self, honeycomb_endpoint_url: Url) -> BuildResult {
+    pub fn build_with_endpoint(
+        self,
+        honeycomb_endpoint_url: Url,
+    ) -> (
+        crate::layer::Layer,
+        BackgroundTask,
+        BackgroundTaskController,
+    ) {
         let (sender, receiver) = crate::event_channel(self.event_channel_size);
-        let layer = crate::Layer {
-            extra_fields: self.extra_fields,
-            service_name: self.service_name,
-            sender,
-        };
+        let layer = crate::layer::Layer::new(self.extra_fields, self.service_name, sender.clone());
         let background_task =
-            crate::BackgroundTask::new(honeycomb_endpoint_url, self.http_headers, receiver);
-        ()
+            BackgroundTask::new(honeycomb_endpoint_url, self.http_headers, receiver);
+        let background_controller = BackgroundTaskController::new(sender);
+        (layer, background_task, background_controller)
     }
 }
 
@@ -159,4 +178,20 @@ impl Builder {
 /// A Configuration API key will work, and must have the Send Events permission.
 /// Learn more about API keys:
 /// https://docs.honeycomb.io/get-started/configure/environments/manage-api-keys/
-pub fn builder(api_key: &str) -> Builder {}
+///
+/// Panics if `api_key` is not a valid HTTP header value.
+pub fn builder(api_key: &str) -> Builder {
+    let mut builder = Builder {
+        service_name: None,
+        extra_fields: HashMap::new(),
+        http_headers: HeaderMap::new(),
+        event_channel_size: 16384,
+    };
+    let mut auth_value =
+        header::HeaderValue::from_str(api_key).expect("api_key to be a valid HTTP header value");
+    auth_value.set_sensitive(true);
+    builder
+        .http_headers
+        .insert(header::AUTHORIZATION, auth_value);
+    builder
+}
