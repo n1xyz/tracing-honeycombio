@@ -10,16 +10,16 @@ pub use builder::{
 };
 pub use reqwest::Url;
 
-fn event_channel(
+pub fn event_channel(
     size: usize,
 ) -> (
     mpsc::Sender<Option<HoneycombEvent>>,
     mpsc::Receiver<Option<HoneycombEvent>>,
 ) {
-    mpsc::channel(size) // make it so big that if we drop events, it's already kind of bad
+    mpsc::channel(size)
 }
 
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize)]
 pub struct Fields {
     #[serde(flatten)]
     pub fields: HashMap<String, serde_json::Value>,
@@ -70,11 +70,16 @@ impl Visit for Fields {
     }
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct HoneycombEvent {
     #[serde(serialize_with = "serialize_datetime_as_rfc3339")]
-    pub timestamp: DateTime<Utc>,
+    pub time: DateTime<Utc>,
 
+    pub data: HoneycombEventInner,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct HoneycombEventInner {
     #[serde(rename = "trace.span_id")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub span_id: Option<u64>,

@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tracing::{Subscriber, span};
 use tracing_subscriber::registry::LookupSpan;
 
-use crate::{Fields, HoneycombEvent};
+use crate::{Fields, HoneycombEvent, HoneycombEventInner};
 
 pub struct Layer {
     // TODO: custom value type
@@ -91,14 +91,16 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         event.record(&mut fields);
         // don't care if channel closed. if capacity is reached, we have larger problems
         let _ = self.sender.try_send(Some(HoneycombEvent {
-            timestamp,
-            span_id: span_id.map(|id| id.into_u64()),
-            parent_id: parent_id.map(|id| id.into_u64()),
-            service_name: self.service_name.clone(),
-            level: meta.level().as_str(),
-            name: meta.name().to_owned(),
-            target: meta.target().to_owned(),
-            fields,
+            time: timestamp,
+            data: HoneycombEventInner {
+                span_id: span_id.map(|id| id.into_u64()),
+                parent_id: parent_id.map(|id| id.into_u64()),
+                service_name: self.service_name.clone(),
+                level: meta.level().as_str(),
+                name: meta.name().to_owned(),
+                target: meta.target().to_owned(),
+                fields,
+            },
         }));
     }
 
@@ -132,14 +134,16 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         );
 
         let _ = self.sender.try_send(Some(HoneycombEvent {
-            timestamp,
-            span_id: Some(id.into_u64()),
-            parent_id: parent_id.map(|id| id.into_u64()),
-            service_name: self.service_name.clone(),
-            level: meta.level().as_str(),
-            name: meta.name().to_owned(),
-            target: meta.target().to_owned(),
-            fields,
+            time: timestamp,
+            data: HoneycombEventInner {
+                span_id: Some(id.into_u64()),
+                parent_id: parent_id.map(|id| id.into_u64()),
+                service_name: self.service_name.clone(),
+                level: meta.level().as_str(),
+                name: meta.name().to_owned(),
+                target: meta.target().to_owned(),
+                fields,
+            },
         }));
     }
 }
@@ -246,7 +250,7 @@ mod tests {
         assert_eq!(
             events
                 .iter()
-                .map(|evt| (evt.parent_id, evt.span_id.unwrap(),))
+                .map(|evt| (evt.data.parent_id, evt.data.span_id.unwrap(),))
                 .collect::<Vec<_>>(),
             vec![
                 (Some(parent_id.into_u64()), child_id.into_u64(),), // the event
@@ -258,7 +262,7 @@ mod tests {
         assert_eq!(
             events
                 .iter()
-                .map(|evt| (evt.fields.fields.get("overridden_field")))
+                .map(|evt| (evt.data.fields.fields.get("overridden_field")))
                 .collect::<Vec<_>>(),
             vec![
                 (Some(&json!(or_val_e))),  // the event
@@ -326,7 +330,7 @@ mod tests {
 
         let child_closing_event = events.get(1).unwrap();
         assert_eq!(
-            child_closing_event.fields.fields.get("child_field"),
+            child_closing_event.data.fields.fields.get("child_field"),
             Some(&json!(42))
         );
 

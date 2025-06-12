@@ -12,16 +12,9 @@ use tracing::{instrument::WithSubscriber, subscriber::NoSubscriber};
 
 use crate::HoneycombEvent;
 
-/// Format needed to submit to the Honeycomb create events API
-#[derive(Serialize, Clone)]
-#[repr(transparent)]
-pub struct WrappedHoneycombEvent {
-    data: HoneycombEvent,
-}
-
 pub struct EventQueue {
-    pub inflight: Vec<WrappedHoneycombEvent>,
-    pub queue: Vec<WrappedHoneycombEvent>,
+    pub inflight: Vec<HoneycombEvent>,
+    pub queue: Vec<HoneycombEvent>,
 }
 
 impl EventQueue {
@@ -34,7 +27,7 @@ impl EventQueue {
 
     pub fn push(&mut self, event: HoneycombEvent) {
         // TODO: add limit?
-        self.queue.push(WrappedHoneycombEvent { data: event });
+        self.queue.push(event);
     }
 
     pub fn drop_outstanding(&mut self) -> usize {
@@ -58,7 +51,7 @@ impl EventQueue {
         !self.queue.is_empty()
     }
 
-    pub fn prepare_request(&mut self) -> Vec<WrappedHoneycombEvent> {
+    pub fn prepare_request(&mut self) -> Vec<HoneycombEvent> {
         assert!(
             self.inflight.is_empty(),
             "cannot send new request when one is already inflight"
@@ -273,7 +266,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{HONEYCOMB_AUTH_HEADER_NAME, background::EventQueue};
+    use crate::{HONEYCOMB_AUTH_HEADER_NAME, HoneycombEventInner, background::EventQueue};
     use axum::{
         Json, Router,
         extract::{Path, Request, State},
@@ -290,14 +283,16 @@ mod tests {
 
     fn new_event(span_id: Option<u64>) -> HoneycombEvent {
         HoneycombEvent {
-            timestamp: Utc::now(),
-            span_id,
-            parent_id: None,
-            service_name: None,
-            level: "INFO",
-            name: "name".to_owned(),
-            target: "target".to_owned(),
-            fields: Default::default(),
+            time: Utc::now(),
+            data: HoneycombEventInner {
+                span_id,
+                parent_id: None,
+                service_name: None,
+                level: "INFO",
+                name: "name".to_owned(),
+                target: "target".to_owned(),
+                fields: Default::default(),
+            },
         }
     }
 
@@ -313,8 +308,11 @@ mod tests {
         assert_eq!(queue.prepare_request().len(), 2);
         assert_eq!((queue.inflight.len(), queue.queue.len()), (2, 0));
         queue.push(HoneycombEvent {
-            span_id: Some(1),
-            ..evt.clone()
+            time: evt.time,
+            data: HoneycombEventInner {
+                span_id: Some(1),
+                ..evt.data.clone()
+            },
         });
 
         queue.handle_response_status(Ok(()));
@@ -345,8 +343,11 @@ mod tests {
         assert_eq!(queue.prepare_request().len(), 2);
         assert_eq!((queue.inflight.len(), queue.queue.len()), (2, 0));
         queue.push(HoneycombEvent {
-            span_id: Some(1),
-            ..evt.clone()
+            time: evt.time,
+            data: HoneycombEventInner {
+                span_id: Some(1),
+                ..evt.data.clone()
+            },
         });
 
         queue.handle_response_status(Err(()));

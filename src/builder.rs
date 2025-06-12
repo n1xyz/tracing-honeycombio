@@ -11,7 +11,7 @@ pub const HONEYCOMB_SERVER_EU: &'static str = "https://api.eu1.honeycomb.io/";
 
 pub const HONEYCOMB_AUTH_HEADER_NAME: &'static str = "x-honeycomb-team";
 
-const DEFAULT_CHANNEL_SIZE: usize = 16384;
+const DEFAULT_CHANNEL_SIZE: usize = 1024;
 
 /// Builder for constructing a [`Layer`] and its corresponding
 /// [`BackgroundTask`].
@@ -90,7 +90,7 @@ impl Builder {
 
     /// Size of the [`std::sync::mpsc`] channel used to send events from the layer to
     /// the background task. Events are silently dropped if this limit is reached, so
-    /// the default is very large such that it will only be reached by a buggy program.
+    /// the default is large such that it will only be reached by a buggy program.
     pub fn event_channel_size(mut self, size: usize) -> Self {
         self.event_channel_size = size;
         self
