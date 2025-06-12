@@ -38,9 +38,10 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
             .span(id)
             .expect("span passed to on_new_span is open, valid, and stored by subscriber");
         let mut extensions = span.extensions_mut();
-        if extensions.get_mut::<Fields>().is_some() {
-            return;
-        }
+        debug_assert!(
+            extensions.get_mut::<Fields>().is_none(),
+            "on_new_span should only ever be called once, something is buggy"
+        );
         let mut fields = Fields::default();
         attrs.record(&mut fields);
         extensions.insert(fields);
