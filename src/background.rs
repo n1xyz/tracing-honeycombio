@@ -1,4 +1,5 @@
 use crate::Url;
+use serde::Serialize;
 use std::{
     error,
     fmt::{self, Debug},
@@ -11,9 +12,16 @@ use tracing::{instrument::WithSubscriber, subscriber::NoSubscriber};
 
 use crate::HoneycombEvent;
 
+/// Format needed to submit to the Honeycomb create events API
+#[derive(Serialize, Clone)]
+#[repr(transparent)]
+pub struct WrappedHoneycombEvent {
+    data: HoneycombEvent,
+}
+
 pub struct EventQueue {
-    pub inflight: Vec<HoneycombEvent>,
-    pub queue: Vec<HoneycombEvent>,
+    pub inflight: Vec<WrappedHoneycombEvent>,
+    pub queue: Vec<WrappedHoneycombEvent>,
 }
 
 impl EventQueue {
@@ -26,7 +34,7 @@ impl EventQueue {
 
     pub fn push(&mut self, event: HoneycombEvent) {
         // TODO: add limit?
-        self.queue.push(event);
+        self.queue.push(WrappedHoneycombEvent { data: event });
     }
 
     pub fn drop_outstanding(&mut self) -> usize {
@@ -50,7 +58,7 @@ impl EventQueue {
         !self.queue.is_empty()
     }
 
-    pub fn prepare_request(&mut self) -> Vec<HoneycombEvent> {
+    pub fn prepare_request(&mut self) -> Vec<WrappedHoneycombEvent> {
         assert!(
             self.inflight.is_empty(),
             "cannot send new request when one is already inflight"
@@ -269,7 +277,8 @@ mod tests {
     use crate::{HONEYCOMB_AUTH_HEADER_NAME, background::EventQueue};
     use axum::{
         Json, Router,
-        extract::Request,
+        extract::{Request, State},
+        http::header::HeaderMap,
         middleware::{self, Next},
         response::{IntoResponse, Response},
         routing::post,
@@ -316,7 +325,7 @@ mod tests {
             queue
                 .queue
                 .iter()
-                .map(|i| i.span_id.unwrap())
+                .map(|i| i.data.span_id.unwrap())
                 .collect::<Vec<_>>(),
             vec![1],
             "queue unchanged, successful events not returned to queue"
@@ -349,7 +358,7 @@ mod tests {
             queue
                 .queue
                 .iter()
-                .map(|i| i.span_id.unwrap())
+                .map(|i| i.data.span_id.unwrap())
                 .collect::<Vec<_>>(),
             vec![0, 0, 1],
             "failed requests returned to queue ahead of unsent requests"
@@ -360,9 +369,9 @@ mod tests {
 
     type Dataset = Vec<HashMap<String, serde_json::Value>>;
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     struct AppState {
-        datasets: RwLock<HashMap<String, Dataset>>,
+        datasets: Arc<RwLock<HashMap<String, Dataset>>>,
     }
 
     async fn middleware_auth_with_mock_key(request: Request, next: Next) -> Response {
@@ -382,15 +391,26 @@ mod tests {
         next.run(request).await
     }
 
+    async fn post_create_events(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+        Json(payload): Json<Dataset>,
+    ) -> Response {
+        assert_eq!(
+            headers.get("x-tested-header").and_then(|v| v.to_str().ok()),
+            Some("tested-header-value")
+        );
+
+        Ok(())
+    }
+
     fn build_mock_server() -> Router<AppState> {
-        let state = Arc::new(AppState {
-            datasets: RwLock::new(HashMap::new()),
-        });
+        let state = AppState {
+            datasets: Arc::new(RwLock::new(HashMap::new())),
+        };
         Router::new()
             .route("/1/batch/{dataset}", post(post_create_events))
             .layer(middleware::from_fn(middleware_auth_with_mock_key))
             .with_state(state.clone())
     }
-
-    async fn post_create_events() {}
 }
