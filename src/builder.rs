@@ -67,18 +67,7 @@ impl Builder {
     }
 
     /// Insert an extra field that is sent with every event.
-    /// The following fields have special meanings and should not be used:
-    ///
-    /// - `trace.span_id`
-    /// - `trace.trace_id`
-    /// - `trace.parent_id``
-    /// - `service.name`
-    /// - `level`
-    /// - `Timestamp`
-    /// - `name`
-    /// - `target`
-    /// - `duration_ms`
-    pub fn insert_extra_field(mut self, field_name: String, field_val: serde_json::Value) -> Self {
+    pub fn extra_field(mut self, field_name: String, field_val: serde_json::Value) -> Self {
         self.extra_fields.insert(field_name, field_val);
         self
     }

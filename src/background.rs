@@ -268,8 +268,7 @@ impl BackgroundTaskController {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashMap,
-        hash::Hash,
+        collections::{HashMap, hash_map::Entry},
         sync::{Arc, RwLock},
     };
 
@@ -277,7 +276,7 @@ mod tests {
     use crate::{HONEYCOMB_AUTH_HEADER_NAME, background::EventQueue};
     use axum::{
         Json, Router,
-        extract::{Request, State},
+        extract::{Path, Request, State},
         http::header::HeaderMap,
         middleware::{self, Next},
         response::{IntoResponse, Response},
@@ -286,6 +285,7 @@ mod tests {
     use chrono::Utc;
     use reqwest::StatusCode;
     use serde_json::json;
+    use tracing_subscriber::layer::SubscriberExt;
 
     fn new_event(span_id: Option<u64>) -> HoneycombEvent {
         HoneycombEvent {
@@ -366,6 +366,11 @@ mod tests {
     }
 
     const MOCK_API_KEY: &'static str = "xxx-testing-api-key-xxx";
+    const TESTING_HEADER_NAME: &'static str = "x-tested-header";
+    const TESTING_HEADER_VALUE: &'static str = "tested-header-value";
+    const TEST_EXTRA_FIELD_NAME: &'static str = "test.extra_field";
+    const TEST_EXTRA_FIELD_VALUE: &'static str = "extra_field_val";
+    const TESTING_DATASET: &'static str = "testdataset";
 
     type Dataset = Vec<HashMap<String, serde_json::Value>>;
 
@@ -394,23 +399,89 @@ mod tests {
     async fn post_create_events(
         State(state): State<AppState>,
         headers: HeaderMap,
+        Path(dataset): Path<String>,
         Json(payload): Json<Dataset>,
     ) -> Response {
         assert_eq!(
-            headers.get("x-tested-header").and_then(|v| v.to_str().ok()),
-            Some("tested-header-value")
+            headers
+                .get(TESTING_HEADER_NAME)
+                .and_then(|v| v.to_str().ok()),
+            Some(TESTING_HEADER_VALUE),
+            "missing or incorrect extra HTTP header"
         );
 
-        Ok(())
+        payload.iter().for_each(|evt| {
+            evt.values().for_each(|v| {
+                assert!(
+                    !matches!(
+                        v,
+                        serde_json::Value::Array(_) | serde_json::Value::Object(_)
+                    ),
+                    "event must be depth 1"
+                )
+            })
+        });
+
+        match state.datasets.write().unwrap().entry(dataset.to_string()) {
+            Entry::Vacant(e) => drop(e.insert(payload)),
+            Entry::Occupied(mut e) => e.get_mut().extend(payload.into_iter()),
+        };
+
+        Json(json!({"status": 200})).into_response()
     }
 
-    fn build_mock_server() -> Router<AppState> {
+    fn build_mock_server() -> (AppState, Router<()>) {
         let state = AppState {
             datasets: Arc::new(RwLock::new(HashMap::new())),
         };
-        Router::new()
-            .route("/1/batch/{dataset}", post(post_create_events))
-            .layer(middleware::from_fn(middleware_auth_with_mock_key))
-            .with_state(state.clone())
+        (
+            state.clone(),
+            Router::new()
+                .route("/1/batch/{dataset}", post(post_create_events))
+                .layer(middleware::from_fn(middleware_auth_with_mock_key))
+                .with_state(state),
+        )
+    }
+
+    async fn run_mock_server() -> (String, AppState, tokio::task::JoinHandle<()>) {
+        let (state, app) = build_mock_server();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let api_host = format!("http://{}", listener.local_addr().unwrap());
+        let join_handle = tokio::spawn(async { axum::serve(listener, app).await.unwrap() });
+        (api_host, state, join_handle)
+    }
+
+    #[tokio::test]
+    async fn bg_task_simple() {
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(tracing_subscriber::fmt::layer()),
+        );
+        let (api_host, state, _join_handle) = run_mock_server().await;
+        let (layer, bg_task, bg_task_controller) = crate::builder(MOCK_API_KEY)
+            .extra_field(
+                TEST_EXTRA_FIELD_NAME.to_string(),
+                json!(TEST_EXTRA_FIELD_VALUE),
+            )
+            .service_name("test-service-name".to_string())
+            .http_header(TESTING_HEADER_NAME, TESTING_HEADER_VALUE)
+            .unwrap()
+            .build(&api_host, TESTING_DATASET)
+            .unwrap();
+
+        let bg_join_handle = tokio::spawn(bg_task);
+
+        let subscriber = tracing_subscriber::registry()
+            // .with(layer)
+            .with(tracing_subscriber::fmt::layer());
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::span!(tracing::Level::WARN, "span message", span.field = 40);
+            let _enter = span.enter();
+            tracing::event!(tracing::Level::INFO, event.field = 41, "event message");
+        });
+        // flush all of the events
+        bg_task_controller.shutdown().await;
+        bg_join_handle.await.unwrap();
+
+        println!("{:#?}", state.datasets.read().unwrap());
     }
 }
