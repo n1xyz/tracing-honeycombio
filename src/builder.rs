@@ -9,6 +9,10 @@ use std::collections::HashMap;
 pub const HONEYCOMB_SERVER_US: &'static str = "https://api.honeycomb.io/";
 pub const HONEYCOMB_SERVER_EU: &'static str = "https://api.eu1.honeycomb.io/";
 
+pub const HONEYCOMB_AUTH_HEADER_NAME: &'static str = "x-honeycomb-team";
+
+const DEFAULT_CHANNEL_SIZE: usize = 16384;
+
 /// Builder for constructing a [`Layer`] and its corresponding
 /// [`BackgroundTask`].
 pub struct Builder {
@@ -97,8 +101,7 @@ impl Builder {
 
     /// Size of the [`std::sync::mpsc`] channel used to send events from the layer to
     /// the background task. Events are silently dropped if this limit is reached, so
-    /// the default is large (`16384`) such that it will only be reached by a buggy
-    /// program.
+    /// the default is very large such that it will only be reached by a buggy program.
     pub fn event_channel_size(mut self, size: usize) -> Self {
         self.event_channel_size = size;
         self
@@ -165,13 +168,14 @@ pub fn builder(api_key: &str) -> Builder {
         service_name: None,
         extra_fields: HashMap::new(),
         http_headers: HeaderMap::new(),
-        event_channel_size: 16384,
+        event_channel_size: DEFAULT_CHANNEL_SIZE,
     };
     let mut auth_value =
         header::HeaderValue::from_str(api_key).expect("api_key to be a valid HTTP header value");
     auth_value.set_sensitive(true);
-    builder
-        .http_headers
-        .insert(header::AUTHORIZATION, auth_value);
+    builder.http_headers.insert(
+        header::HeaderName::from_static(HONEYCOMB_AUTH_HEADER_NAME),
+        auth_value,
+    );
     builder
 }

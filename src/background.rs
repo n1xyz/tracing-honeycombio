@@ -259,9 +259,24 @@ impl BackgroundTaskController {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::HashMap,
+        hash::Hash,
+        sync::{Arc, RwLock},
+    };
+
     use super::*;
-    use crate::background::EventQueue;
+    use crate::{HONEYCOMB_AUTH_HEADER_NAME, background::EventQueue};
+    use axum::{
+        Json, Router,
+        extract::Request,
+        middleware::{self, Next},
+        response::{IntoResponse, Response},
+        routing::post,
+    };
     use chrono::Utc;
+    use reqwest::StatusCode;
+    use serde_json::json;
 
     fn new_event(span_id: Option<u64>) -> HoneycombEvent {
         HoneycombEvent {
@@ -340,4 +355,42 @@ mod tests {
             "failed requests returned to queue ahead of unsent requests"
         );
     }
+
+    const MOCK_API_KEY: &'static str = "xxx-testing-api-key-xxx";
+
+    type Dataset = Vec<HashMap<String, serde_json::Value>>;
+
+    #[derive(Debug)]
+    struct AppState {
+        datasets: RwLock<HashMap<String, Dataset>>,
+    }
+
+    async fn middleware_auth_with_mock_key(request: Request, next: Next) -> Response {
+        let api_key = match request.headers().get(HONEYCOMB_AUTH_HEADER_NAME) {
+            None => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"error": "missing API key header"})),
+                )
+                    .into_response();
+            }
+            Some(api_key) => api_key,
+        };
+        if api_key != MOCK_API_KEY {
+            return (StatusCode::FORBIDDEN, "invalid API key").into_response();
+        }
+        next.run(request).await
+    }
+
+    fn build_mock_server() -> Router<AppState> {
+        let state = Arc::new(AppState {
+            datasets: RwLock::new(HashMap::new()),
+        });
+        Router::new()
+            .route("/1/batch/{dataset}", post(post_create_events))
+            .layer(middleware::from_fn(middleware_auth_with_mock_key))
+            .with_state(state.clone())
+    }
+
+    async fn post_create_events() {}
 }

@@ -5,7 +5,9 @@ use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 
 pub mod builder;
-pub use builder::{Builder, HONEYCOMB_SERVER_EU, HONEYCOMB_SERVER_US, builder};
+pub use builder::{
+    Builder, HONEYCOMB_AUTH_HEADER_NAME, HONEYCOMB_SERVER_EU, HONEYCOMB_SERVER_US, builder,
+};
 pub use reqwest::Url;
 
 fn event_channel(
@@ -96,7 +98,7 @@ fn serialize_datetime_as_rfc3339<S>(dt: &DateTime<Utc>, serializer: S) -> Result
 where
     S: serde::Serializer,
 {
-    serializer.serialize_str(&dt.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
+    serializer.serialize_str(&dt.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, /* use_z */ true))
 }
 
 pub mod layer;
