@@ -116,7 +116,7 @@ impl Builder {
         // endpoint is {api_host}/1/batch/{datasetSlug}
         // ref: https://api-docs.honeycomb.io/api/events/createevents
         let endpoint = Url::parse(api_host)
-            .and_then(|host| host.join("1/batch"))
+            .and_then(|host| host.join("1/batch/"))
             .and_then(|endpoint| endpoint.join(dataset_slug))
             .map_err(|_| InvalidEndpointConfig {
                 api_host: api_host.to_string(),

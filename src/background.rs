@@ -284,6 +284,7 @@ mod tests {
     };
     use chrono::Utc;
     use reqwest::StatusCode;
+    use serde::Deserialize;
     use serde_json::json;
     use tracing_subscriber::layer::SubscriberExt;
 
@@ -372,7 +373,14 @@ mod tests {
     const TEST_EXTRA_FIELD_VALUE: &'static str = "extra_field_val";
     const TESTING_DATASET: &'static str = "testdataset";
 
-    type Dataset = Vec<HashMap<String, serde_json::Value>>;
+    type ApiEvent = HashMap<String, serde_json::Value>;
+    type Dataset = Vec<ApiEvent>;
+
+    #[derive(Clone, Debug, Deserialize)]
+    struct WrappedEvent {
+        data: ApiEvent,
+    }
+    type DatasetPayload = Vec<WrappedEvent>;
 
     #[derive(Debug, Clone)]
     struct AppState {
@@ -400,7 +408,7 @@ mod tests {
         State(state): State<AppState>,
         headers: HeaderMap,
         Path(dataset): Path<String>,
-        Json(payload): Json<Dataset>,
+        Json(payload): Json<DatasetPayload>,
     ) -> Response {
         assert_eq!(
             headers
@@ -411,20 +419,22 @@ mod tests {
         );
 
         payload.iter().for_each(|evt| {
-            evt.values().for_each(|v| {
+            evt.data.iter().for_each(|(k, v)| {
                 assert!(
                     !matches!(
                         v,
                         serde_json::Value::Array(_) | serde_json::Value::Object(_)
                     ),
-                    "event must be depth 1"
+                    "event must be depth 1: {} = {}",
+                    k,
+                    v
                 )
             })
         });
 
         match state.datasets.write().unwrap().entry(dataset.to_string()) {
-            Entry::Vacant(e) => drop(e.insert(payload)),
-            Entry::Occupied(mut e) => e.get_mut().extend(payload.into_iter()),
+            Entry::Vacant(e) => drop(e.insert(payload.into_iter().map(|e| e.data).collect())),
+            Entry::Occupied(mut e) => e.get_mut().extend(payload.into_iter().map(|e| e.data)),
         };
 
         Json(json!({"status": 200})).into_response()
@@ -443,12 +453,12 @@ mod tests {
         )
     }
 
-    async fn run_mock_server() -> (String, AppState, tokio::task::JoinHandle<()>) {
+    async fn run_mock_server() -> (String, AppState, impl Future<Output = ()>) {
         let (state, app) = build_mock_server();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let api_host = format!("http://{}", listener.local_addr().unwrap());
-        let join_handle = tokio::spawn(async { axum::serve(listener, app).await.unwrap() });
-        (api_host, state, join_handle)
+        let serve_task = async { axum::serve(listener, app).await.unwrap() };
+        (api_host, state, serve_task)
     }
 
     #[tokio::test]
@@ -456,7 +466,7 @@ mod tests {
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::registry().with(tracing_subscriber::fmt::layer()),
         );
-        let (api_host, state, _join_handle) = run_mock_server().await;
+        let (api_host, state, serve_task) = run_mock_server().await;
         let (layer, bg_task, bg_task_controller) = crate::builder(MOCK_API_KEY)
             .extra_field(
                 TEST_EXTRA_FIELD_NAME.to_string(),
@@ -468,10 +478,11 @@ mod tests {
             .build(&api_host, TESTING_DATASET)
             .unwrap();
 
-        let bg_join_handle = tokio::spawn(bg_task);
+        let _server_join_handle = tokio::spawn(serve_task.with_current_subscriber());
+        let bg_join_handle = tokio::spawn(bg_task.with_current_subscriber());
 
         let subscriber = tracing_subscriber::registry()
-            // .with(layer)
+            .with(layer)
             .with(tracing_subscriber::fmt::layer());
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::span!(tracing::Level::WARN, "span message", span.field = 40);
