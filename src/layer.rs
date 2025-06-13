@@ -150,20 +150,19 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::event_channel;
-    use chrono::DateTime;
     use serde_json::{Value, json};
     use tracing::Level;
     use tracing_subscriber::layer::SubscriberExt;
 
-    const OTEL_FIELD_SPAN_ID: &'static str = "trace.span_id";
+    pub(crate) const OTEL_FIELD_SPAN_ID: &'static str = "trace.span_id";
     // const OTEL_FIELD_TRACE_ID: &'static str = "trace.trace_id";
-    const OTEL_FIELD_PARENT_ID: &'static str = "trace.parent_id";
-    const OTEL_FIELD_SERVICE_NAME: &'static str = "service.name";
-    const OTEL_FIELD_LEVEL: &'static str = "level";
-    const OTEL_FIELD_TIMESTAMP: &'static str = "timestamp";
+    pub(crate) const OTEL_FIELD_PARENT_ID: &'static str = "trace.parent_id";
+    pub(crate) const OTEL_FIELD_SERVICE_NAME: &'static str = "service.name";
+    pub(crate) const OTEL_FIELD_LEVEL: &'static str = "level";
+    pub(crate) const OTEL_FIELD_TIMESTAMP: &'static str = "timestamp";
     // const OTEL_FIELD_DURATION_MS: &'static str = "duration_ms";
 
     fn check_ev_map_depth_one(ev_map: &serde_json::Map<String, Value>) {
@@ -273,8 +272,8 @@ mod tests {
             ]
         );
 
-        let log_event = events.get(0);
-        let ev_map = match serde_json::to_value(&log_event).unwrap() {
+        let log_event = &events[0];
+        let ev_map = match serde_json::to_value(&log_event.data).unwrap() {
             Value::Object(obj) => obj,
             val => panic!(
                 "expected event to serialize into map, instead got {:#?}",
@@ -297,20 +296,7 @@ mod tests {
         );
         assert_eq!(ev_map.get(OTEL_FIELD_LEVEL), Some(&json!("INFO")));
         assert!(
-            match ev_map.get(OTEL_FIELD_TIMESTAMP) {
-                Some(Value::String(s)) => Some(s),
-                _ => None,
-            }
-            .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
-            .and_then(|dt| {
-                let dt = dt.with_timezone(&Utc);
-                if before <= dt && dt <= after {
-                    Some(())
-                } else {
-                    None
-                }
-            })
-            .is_some(),
+            before <= log_event.time && log_event.time <= after,
             "invalid timestamp: {:#?}",
             ev_map.get(OTEL_FIELD_TIMESTAMP)
         );
@@ -335,8 +321,8 @@ mod tests {
             Some(&json!(42))
         );
 
-        let parent_closing_event = events.get(2).unwrap();
-        let ev_map = match serde_json::to_value(&parent_closing_event).unwrap() {
+        let parent_closing_event = &events[2];
+        let ev_map = match serde_json::to_value(&parent_closing_event.data).unwrap() {
             Value::Object(obj) => obj,
             val => panic!(
                 "expected event to serialize into map, instead got {:#?}",

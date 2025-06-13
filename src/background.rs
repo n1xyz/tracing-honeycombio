@@ -1,5 +1,4 @@
 use crate::Url;
-use serde::Serialize;
 use std::{
     error,
     fmt::{self, Debug},
@@ -151,6 +150,8 @@ impl BackgroundTask {
 impl Future for BackgroundTask {
     type Output = ();
 
+    // TODO: in order to implement bounded memory usage by conditionally polling channel,
+    // remove EventQueue and rewrite this function as a state machine
     fn poll(mut self: Pin<&mut BackgroundTask>, cx: &mut Context<'_>) -> Poll<()> {
         // prevent infinite log recursion
         let mut default_guard = tracing::subscriber::set_default(NoSubscriber::default());
@@ -260,13 +261,12 @@ impl BackgroundTaskController {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::{HashMap, hash_map::Entry},
-        sync::{Arc, RwLock},
-    };
-
     use super::*;
-    use crate::{HONEYCOMB_AUTH_HEADER_NAME, HoneycombEventInner, background::EventQueue};
+    use crate::{
+        HONEYCOMB_AUTH_HEADER_NAME, HoneycombEventInner,
+        background::EventQueue,
+        layer::tests::{OTEL_FIELD_LEVEL, OTEL_FIELD_PARENT_ID, OTEL_FIELD_SPAN_ID},
+    };
     use axum::{
         Json, Router,
         extract::{Path, Request, State},
@@ -279,7 +279,13 @@ mod tests {
     use reqwest::StatusCode;
     use serde::Deserialize;
     use serde_json::json;
-    use tracing_subscriber::layer::SubscriberExt;
+    use std::{
+        collections::{HashMap, hash_map::Entry},
+        sync::{Arc, RwLock},
+    };
+    use tracing::Level;
+    use tracing_mock::expect;
+    use tracing_subscriber::{Layer, filter, layer::SubscriberExt};
 
     fn new_event(span_id: Option<u64>) -> HoneycombEvent {
         HoneycombEvent {
@@ -419,6 +425,14 @@ mod tests {
             "missing or incorrect extra HTTP header"
         );
 
+        if headers.get("x-induce-error").is_some() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "induced error"})),
+            )
+                .into_response();
+        }
+
         payload.iter().for_each(|evt| {
             evt.data.iter().for_each(|(k, v)| {
                 assert!(
@@ -486,14 +500,91 @@ mod tests {
             .with(layer)
             .with(tracing_subscriber::fmt::layer());
         tracing::subscriber::with_default(subscriber, || {
-            let span = tracing::span!(tracing::Level::WARN, "span message", span.field = 40);
+            let span = tracing::span!(target: "span-test-target", tracing::Level::WARN, "span name", span.field = 40);
             let _enter = span.enter();
-            tracing::event!(tracing::Level::INFO, event.field = 41, "event message");
+            tracing::event!(name: "test-name", target: "test-target", tracing::Level::INFO, event.field = 41, "event message");
         });
         // flush all of the events
         bg_task_controller.shutdown().await;
         bg_join_handle.await.unwrap();
 
-        println!("{:#?}", state.datasets.read().unwrap());
+        // get an exclusive copy so that we don't have to go through the lock all the time
+        let datasets = state.datasets.read().unwrap().clone();
+        assert_eq!(datasets.len(), 1, "expected single dataset");
+        let test_dataset = datasets
+            .get(TESTING_DATASET)
+            .expect("single dataset to be testing dataset");
+        assert_eq!(
+            test_dataset.len(),
+            2,
+            "expected exactly one event and one span close"
+        );
+        let log_event = &test_dataset[0];
+        assert_eq!(log_event.get("event.field"), Some(&json!(41)));
+        assert_eq!(log_event.get("span.field"), Some(&json!(40)));
+        assert_eq!(log_event.get(OTEL_FIELD_LEVEL), Some(&json!("INFO")));
+        assert_eq!(log_event.get("target"), Some(&json!("test-target")));
+        assert_eq!(log_event.get("name"), Some(&json!("test-name")));
+
+        let span_event = &test_dataset[1];
+        assert_eq!(span_event.get("event.field"), None);
+        assert_eq!(span_event.get("span.field"), Some(&json!(40)));
+        assert_eq!(span_event.get(OTEL_FIELD_LEVEL), Some(&json!("WARN")));
+        assert_eq!(span_event.get("target"), Some(&json!("span-test-target")));
+        assert_eq!(span_event.get("name"), Some(&json!("span name")));
+        assert!(span_event.get(OTEL_FIELD_SPAN_ID).is_some());
+        assert_eq!(
+            log_event.get(OTEL_FIELD_SPAN_ID),
+            span_event.get(OTEL_FIELD_SPAN_ID)
+        );
+    }
+
+    #[tokio::test]
+    async fn bg_error_handle() {
+        let (mock_layer, handle) = tracing_mock::layer::mock()
+            .event(
+                expect::event()
+                    .at_level(Level::ERROR)
+                    .with_fields(expect::msg("couldn't send logs to honeycomb"))
+                    .with_fields(expect::field("error")), // the underlying reqwest error
+            )
+            .run_with_handle();
+        let crate_name = module_path!().split("::").next().unwrap();
+        let filter = filter::Targets::new()
+            .with_target(format!("{}::background", crate_name), Level::INFO)
+            .with_default(filter::LevelFilter::OFF);
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::fmt::layer())
+                .with(mock_layer.with_filter(filter)),
+        );
+
+        let (api_host, _state, serve_task) = run_mock_server().await;
+        let (honey_layer, bg_task, bg_task_controller) = crate::builder(MOCK_API_KEY)
+            .extra_field(
+                TEST_EXTRA_FIELD_NAME.to_string(),
+                json!(TEST_EXTRA_FIELD_VALUE),
+            )
+            .service_name("test-service-name".to_string())
+            .http_header(TESTING_HEADER_NAME, TESTING_HEADER_VALUE)
+            .unwrap()
+            .http_header("x-induce-error", "1")
+            .unwrap()
+            .build(&api_host, TESTING_DATASET)
+            .unwrap();
+
+        let _server_join_handle = tokio::spawn(serve_task.with_current_subscriber());
+        let honey_bg_join_handle = tokio::spawn(bg_task.with_current_subscriber());
+
+        let subscriber = tracing_subscriber::registry()
+            .with(honey_layer)
+            .with(tracing_subscriber::fmt::layer());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::event!(Level::INFO, "event message");
+        });
+        // flush all of the events
+        bg_task_controller.shutdown().await;
+        honey_bg_join_handle.await.unwrap();
+        handle.assert_finished();
     }
 }
