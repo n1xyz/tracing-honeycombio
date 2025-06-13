@@ -209,6 +209,16 @@ impl Future for BackgroundTask {
                     Poll::Pending => {}
                 }
             }
+            println!(
+                "send_task {} backing_off {} new_req_needed {}",
+                if self.send_task.is_some() {
+                    "Some"
+                } else {
+                    "None"
+                },
+                backing_off,
+                self.queue.new_request_needed()
+            );
             if self.send_task.is_none() && !backing_off && self.queue.new_request_needed() {
                 let events = self.queue.prepare_request();
                 let body = serde_json::to_vec(&events)
@@ -232,6 +242,7 @@ impl Future for BackgroundTask {
                 break;
             }
         }
+        // todo: when rewriting this consider finishing retries before quitting
         if self.quitting && self.send_task.is_none() {
             Poll::Ready(())
         } else {
@@ -265,7 +276,7 @@ mod tests {
     use crate::{
         HONEYCOMB_AUTH_HEADER_NAME, HoneycombEventInner,
         background::EventQueue,
-        layer::tests::{OTEL_FIELD_LEVEL, OTEL_FIELD_PARENT_ID, OTEL_FIELD_SPAN_ID},
+        layer::tests::{OTEL_FIELD_LEVEL, OTEL_FIELD_SPAN_ID},
     };
     use axum::{
         Json, Router,
@@ -281,7 +292,7 @@ mod tests {
     use serde_json::json;
     use std::{
         collections::{HashMap, hash_map::Entry},
-        sync::{Arc, RwLock},
+        sync::{Arc, Mutex, RwLock},
     };
     use tracing::Level;
     use tracing_mock::expect;
@@ -392,6 +403,16 @@ mod tests {
     #[derive(Debug, Clone)]
     struct AppState {
         datasets: Arc<RwLock<HashMap<String, Dataset>>>,
+        req_count: Arc<Mutex<u8>>,
+    }
+
+    impl AppState {
+        fn new() -> Self {
+            Self {
+                datasets: Arc::new(RwLock::new(HashMap::new())),
+                req_count: Arc::new(Mutex::new(0)),
+            }
+        }
     }
 
     async fn middleware_auth_with_mock_key(request: Request, next: Next) -> Response {
@@ -426,11 +447,15 @@ mod tests {
         );
 
         if headers.get("x-induce-error").is_some() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "induced error"})),
-            )
-                .into_response();
+            let mut req_count = state.req_count.lock().unwrap();
+            *req_count += 1;
+            if *req_count == 1 {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "induced error"})),
+                )
+                    .into_response();
+            }
         }
 
         payload.iter().for_each(|evt| {
@@ -456,9 +481,7 @@ mod tests {
     }
 
     fn build_mock_server() -> (AppState, Router<()>) {
-        let state = AppState {
-            datasets: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let state = AppState::new();
         (
             state.clone(),
             Router::new()
@@ -540,7 +563,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bg_error_handle() {
+    async fn bg_error_handle_and_rety() {
         let (mock_layer, handle) = tracing_mock::layer::mock()
             .event(
                 expect::event()
@@ -549,6 +572,7 @@ mod tests {
                     .with_fields(expect::field("error")), // the underlying reqwest error
             )
             .run_with_handle();
+
         let crate_name = module_path!().split("::").next().unwrap();
         let filter = filter::Targets::new()
             .with_target(format!("{}::background", crate_name), Level::INFO)
@@ -556,10 +580,11 @@ mod tests {
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::registry()
                 .with(tracing_subscriber::fmt::layer())
+                /* comment out next line to reduce stdout spam during test */
                 .with(mock_layer.with_filter(filter)),
         );
 
-        let (api_host, _state, serve_task) = run_mock_server().await;
+        let (api_host, state, serve_task) = run_mock_server().await;
         let (honey_layer, bg_task, bg_task_controller) = crate::builder(MOCK_API_KEY)
             .extra_field(
                 TEST_EXTRA_FIELD_NAME.to_string(),
@@ -582,9 +607,33 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             tracing::event!(Level::INFO, "event message");
         });
+
+        // since (for now) we don't continue retrying after shutdown signal, give some
+        // time for client to retry
+        for _ in 0..4 {
+            if *state.req_count.lock().unwrap() > 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
         // flush all of the events
         bg_task_controller.shutdown().await;
         honey_bg_join_handle.await.unwrap();
         handle.assert_finished();
+
+        assert_eq!(
+            *state.req_count.lock().unwrap(),
+            2,
+            "expected induce error test to take exactly 2 request to suceed",
+        );
+        // get an exclusive copy so that we don't have to go through the lock all the time
+        let datasets = state.datasets.read().unwrap().clone();
+        assert_eq!(datasets.len(), 1, "expected dataset to be recorded");
+        assert_eq!(
+            datasets.values().next().unwrap().len(),
+            1,
+            "expected single event in dataset"
+        );
     }
 }
