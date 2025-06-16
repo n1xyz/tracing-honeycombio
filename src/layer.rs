@@ -114,6 +114,49 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
             },
         }));
     }
+
+    // exit can happen many times for same span, close happens only once
+    fn on_exit(&self, id: &span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let timestamp = Utc::now();
+        let span = ctx
+            .span(id)
+            .expect("span passed to on_new_span is open, valid, and stored by subscriber");
+        let meta = span.metadata();
+        let mut fields = Fields::new(self.extra_fields.clone());
+        let parent_id = span.parent().map(|p| p.id());
+        if let Some(scope_iter) = parent_id.as_ref().and_then(|p_id| ctx.span_scope(p_id)) {
+            for span in scope_iter.from_root() {
+                fields.fields.extend(
+                    span.extensions()
+                        .get::<Fields>()
+                        .expect("span registered in on_new_span")
+                        .fields
+                        .iter()
+                        .map(|(field, val)| (field.clone(), val.clone())),
+                );
+            }
+        }
+        fields.fields.extend(
+            span.extensions()
+                .get::<Fields>()
+                .expect("fields extension was inserted by on_new_span")
+                .fields
+                .clone(),
+        );
+
+        let _ = self.sender.try_send(Some(HoneycombEvent {
+            time: timestamp,
+            data: HoneycombEventInner {
+                span_id: Some(id.into_u64()),
+                parent_id: parent_id.map(|id| id.into_u64()),
+                service_name: self.service_name.clone(),
+                level: level_as_honeycomb_str(meta.level()),
+                name: meta.name().to_owned(),
+                target: meta.target().to_owned(),
+                fields,
+            },
+        }));
+    }
 }
 
 #[cfg(test)]
@@ -160,7 +203,7 @@ pub(crate) mod tests {
         let (gp_val, p_val, c_val, e_val) = (40, 41, 42, 43);
 
         let before = Utc::now();
-        let (_grandparent_id, parent_id, child_id) =
+        let (grandparent_id, parent_id, child_id) =
             tracing::subscriber::with_default(subscriber, || {
                 let grandparent_span = tracing::span!(
                     Level::DEBUG,
@@ -203,24 +246,44 @@ pub(crate) mod tests {
         let num_events = receiver.len();
         assert_eq!(
             num_events,
-            1,
-            "expected 1 event after test, got {}",
+            4,
+            "expected 4 events after test, got {}",
             receiver.len()
         );
-        let event = receiver
-            .blocking_recv()
-            .expect("channel to be open")
-            .expect("event to not be close message");
+        let mut events = Vec::with_capacity(num_events);
         assert_eq!(
-            (event.data.parent_id, event.data.span_id.unwrap()),
-            (Some(parent_id.into_u64()), child_id.into_u64()),
+            receiver.blocking_recv_many(&mut events, num_events),
+            num_events,
+            "expected to receive all events in one go"
+        );
+        let events = events.into_iter().map(|i| i.unwrap()).collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .map(|evt| (evt.data.parent_id, evt.data.span_id.unwrap(),))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(parent_id.into_u64()), child_id.into_u64(),), // the event
+                (Some(parent_id.into_u64()), child_id.into_u64(),), // child_span closing
+                (Some(grandparent_id.into_u64()), parent_id.into_u64(),), // parent_span closing
+                (None, grandparent_id.into_u64())                   // grandparent_span closing
+            ]
         );
         assert_eq!(
-            event.data.fields.fields.get("overridden_field"),
-            (Some(&json!(or_val_e))),
+            events
+                .iter()
+                .map(|evt| (evt.data.fields.fields.get("overridden_field")))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(&json!(or_val_e))),  // the event
+                (Some(&json!(or_val_c))),  // child_span closing
+                (Some(&json!(or_val_p))),  // parent_span closing
+                (Some(&json!(or_val_gp)))  // grandparent_span closing
+            ]
         );
 
-        let ev_map = match serde_json::to_value(&event.data).unwrap() {
+        let log_event = &events[0];
+        let ev_map = match serde_json::to_value(&log_event.data).unwrap() {
             Value::Object(obj) => obj,
             val => panic!(
                 "expected event to serialize into map, instead got {:#?}",
@@ -243,7 +306,7 @@ pub(crate) mod tests {
         );
         assert_eq!(ev_map.get(OTEL_FIELD_LEVEL), Some(&json!("info")));
         assert!(
-            before <= event.time && event.time <= after,
+            before <= log_event.time && log_event.time <= after,
             "invalid timestamp: {:#?}",
             ev_map.get(OTEL_FIELD_TIMESTAMP)
         );
@@ -261,5 +324,35 @@ pub(crate) mod tests {
         assert_eq!(ev_map.get("parent_field"), Some(&json!(p_val)));
         assert_eq!(ev_map.get("grandparent_field"), Some(&json!(gp_val)));
         assert_eq!(ev_map.get("overridden_field"), Some(&json!(or_val_e)));
+
+        let child_closing_event = events.get(1).unwrap();
+        assert_eq!(
+            child_closing_event.data.fields.fields.get("child_field"),
+            Some(&json!(42))
+        );
+
+        let parent_closing_event = &events[2];
+        let ev_map = match serde_json::to_value(&parent_closing_event.data).unwrap() {
+            Value::Object(obj) => obj,
+            val => panic!(
+                "expected event to serialize into map, instead got {:#?}",
+                val
+            ),
+        };
+        check_ev_map_depth_one(&ev_map);
+
+        assert_eq!(
+            ev_map.get(OTEL_FIELD_SPAN_ID),
+            Some(&json!(parent_id.into_u64()))
+        );
+        assert_eq!(
+            ev_map.get(OTEL_FIELD_PARENT_ID),
+            Some(&json!(grandparent_id.into_u64()))
+        );
+        assert_eq!(ev_map.get("event_field"), None);
+        assert_eq!(ev_map.get("child_field"), None);
+        assert_eq!(ev_map.get("parent_field"), Some(&json!(p_val)));
+        assert_eq!(ev_map.get("grandparent_field"), Some(&json!(gp_val)));
+        assert_eq!(ev_map.get("overridden_field"), Some(&json!(or_val_p)));
     }
 }
