@@ -115,11 +115,10 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         }));
     }
 
-    // exit can happen many times for same span, close happens only once
-    fn on_exit(&self, id: &span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+    fn on_close(&self, id: span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
         let timestamp = Utc::now();
         let span = ctx
-            .span(id)
+            .span(&id)
             .expect("span passed to on_new_span is open, valid, and stored by subscriber");
         let meta = span.metadata();
         let mut fields = Fields::new(self.extra_fields.clone());
