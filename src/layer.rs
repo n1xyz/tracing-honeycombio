@@ -1,7 +1,7 @@
 use chrono::Utc;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
-use tracing::{Subscriber, span};
+use tracing::{Level, Subscriber, span};
 use tracing_subscriber::registry::LookupSpan;
 
 use crate::{Fields, HoneycombEvent, HoneycombEventInner};
@@ -11,6 +11,16 @@ pub struct Layer {
     extra_fields: HashMap<String, serde_json::Value>,
     service_name: Option<String>,
     sender: mpsc::Sender<Option<HoneycombEvent>>,
+}
+
+fn level_as_honeycomb_str(level: &Level) -> &'static str {
+    match *level {
+        Level::TRACE => "trace",
+        Level::DEBUG => "debug",
+        Level::INFO => "info",
+        Level::WARN => "warn",
+        Level::ERROR => "error",
+    }
 }
 
 impl Layer {
@@ -97,7 +107,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
                 span_id: span_id.map(|id| id.into_u64()),
                 parent_id: parent_id.map(|id| id.into_u64()),
                 service_name: self.service_name.clone(),
-                level: meta.level().as_str(),
+                level: level_as_honeycomb_str(meta.level()),
                 name: meta.name().to_owned(),
                 target: meta.target().to_owned(),
                 fields,
@@ -140,7 +150,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
                 span_id: Some(id.into_u64()),
                 parent_id: parent_id.map(|id| id.into_u64()),
                 service_name: self.service_name.clone(),
-                level: meta.level().as_str(),
+                level: level_as_honeycomb_str(meta.level()),
                 name: meta.name().to_owned(),
                 target: meta.target().to_owned(),
                 fields,
@@ -294,7 +304,7 @@ pub(crate) mod tests {
             ev_map.get(OTEL_FIELD_SERVICE_NAME),
             Some(&json!("service_name"))
         );
-        assert_eq!(ev_map.get(OTEL_FIELD_LEVEL), Some(&json!("INFO")));
+        assert_eq!(ev_map.get(OTEL_FIELD_LEVEL), Some(&json!("info")));
         assert!(
             before <= log_event.time && log_event.time <= after,
             "invalid timestamp: {:#?}",
