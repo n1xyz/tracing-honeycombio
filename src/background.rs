@@ -209,16 +209,6 @@ impl Future for BackgroundTask {
                     Poll::Pending => {}
                 }
             }
-            println!(
-                "send_task {} backing_off {} new_req_needed {}",
-                if self.send_task.is_some() {
-                    "Some"
-                } else {
-                    "None"
-                },
-                backing_off,
-                self.queue.new_request_needed()
-            );
             if self.send_task.is_none() && !backing_off && self.queue.new_request_needed() {
                 let events = self.queue.prepare_request();
                 let body = serde_json::to_vec(&events)
