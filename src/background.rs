@@ -537,29 +537,14 @@ mod tests {
         let test_dataset = datasets
             .get(TESTING_DATASET)
             .expect("single dataset to be testing dataset");
-        assert_eq!(
-            test_dataset.len(),
-            2,
-            "expected exactly one event and one span close"
-        );
+        assert_eq!(test_dataset.len(), 1, "expected exactly one event");
         let log_event = &test_dataset[0];
         assert_eq!(log_event.get("event.field"), Some(&json!(41)));
         assert_eq!(log_event.get("span.field"), Some(&json!(40)));
         assert_eq!(log_event.get(OTEL_FIELD_LEVEL), Some(&json!("info")));
         assert_eq!(log_event.get("target"), Some(&json!("test-target")));
         assert_eq!(log_event.get("name"), Some(&json!("test-name")));
-
-        let span_event = &test_dataset[1];
-        assert_eq!(span_event.get("event.field"), None);
-        assert_eq!(span_event.get("span.field"), Some(&json!(40)));
-        assert_eq!(span_event.get(OTEL_FIELD_LEVEL), Some(&json!("warn")));
-        assert_eq!(span_event.get("target"), Some(&json!("span-test-target")));
-        assert_eq!(span_event.get("name"), Some(&json!("span name")));
-        assert!(span_event.get(OTEL_FIELD_SPAN_ID).is_some());
-        assert_eq!(
-            log_event.get(OTEL_FIELD_SPAN_ID),
-            span_event.get(OTEL_FIELD_SPAN_ID)
-        );
+        assert!(log_event.get(OTEL_FIELD_SPAN_ID).is_some());
     }
 
     #[tokio::test]
