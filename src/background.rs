@@ -84,6 +84,7 @@ pub struct BackgroundTask {
     honeycomb_endpoint_url: Url,
     receiver: mpsc::Receiver<Option<HoneycombEvent>>,
     queue: EventQueue,
+    compression_context: zstd::zstd_safe::CCtx<'static>,
     http_client: reqwest::Client,
     backoff_count: u32,
     backoff: Option<Pin<Box<tokio::time::Sleep>>>,
@@ -103,6 +104,7 @@ impl BackgroundTask {
             receiver,
             honeycomb_endpoint_url,
             queue: EventQueue::new(),
+            compression_context: zstd::zstd_safe::CCtx::try_create().expect("zstd context allocation to succeed"),
             http_client: reqwest::Client::builder()
                 .user_agent(concat!(
                     env!("CARGO_PKG_NAME"),
@@ -147,7 +149,7 @@ impl BackgroundTask {
     }
 }
 
-impl Future for BackgroundTask {
+impl<'a> Future for BackgroundTask {
     type Output = ();
 
     // TODO: in order to implement bounded memory usage by conditionally polling channel,
@@ -211,8 +213,12 @@ impl Future for BackgroundTask {
             }
             if self.send_task.is_none() && !backing_off && self.queue.new_request_needed() {
                 let events = self.queue.prepare_request();
-                let body = serde_json::to_vec(&events)
-                    .expect("none of the tracing field types can fail to serialize");
+                let mut body = Vec::with_capacity(128);
+                let mut encoder =
+                    zstd::Encoder::with_context(&mut body, &mut self.compression_context);
+                let () = serde_json::to_writer(&mut encoder, &events)
+                    .expect("none of the tracing field types can fail to serialize and zstd compression should succeed");
+                encoder.finish().expect("zstd compression should succeed");
 
                 // TODO: compress? docs mention supported compression formats
                 let request_builder = self.http_client.post(self.honeycomb_endpoint_url.clone());
@@ -220,6 +226,7 @@ impl Future for BackgroundTask {
                     async move {
                         request_builder
                             .header(reqwest::header::CONTENT_TYPE, "application/json")
+                            .header(reqwest::header::CONTENT_ENCODING, "zst")
                             .body(body)
                             .send()
                             .await?
@@ -282,6 +289,7 @@ mod tests {
     use serde_json::json;
     use std::{
         collections::{HashMap, hash_map::Entry},
+        io::Cursor,
         sync::{Arc, Mutex, RwLock},
     };
     use tracing::Level;
@@ -422,6 +430,34 @@ mod tests {
         next.run(request).await
     }
 
+    async fn middleware_zstd_decompress(request: Request, next: Next) -> Response {
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::CONTENT_ENCODING)
+                .and_then(|v| str::from_utf8(v.as_bytes()).ok()),
+            Some("zst")
+        );
+
+        let (parts, body) = request.into_parts();
+        let bytes = axum::body::to_bytes(body, 8192).await.unwrap();
+
+        let new_body = match zstd::decode_all(Cursor::new(bytes.to_vec())) {
+            Err(e) => {
+                tracing::error!(%e, "zstd decoding failed");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "failed to decompress request body"})),
+                )
+                    .into_response();
+            }
+            Ok(b) => b,
+        };
+        let req = Request::from_parts(parts, new_body.into());
+
+        next.run(req).await
+    }
+
     async fn post_create_events(
         State(state): State<AppState>,
         headers: HeaderMap,
@@ -476,6 +512,7 @@ mod tests {
             state.clone(),
             Router::new()
                 .route("/1/batch/{dataset}", post(post_create_events))
+                .layer(middleware::from_fn(middleware_zstd_decompress))
                 .layer(middleware::from_fn(middleware_auth_with_mock_key))
                 .with_state(state),
         )
