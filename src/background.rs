@@ -165,7 +165,7 @@ impl Future for BackgroundTask {
         }
 
         let mut backing_off = if let Some(backoff) = &mut self.backoff {
-            matches!(Pin::new(backoff).poll(cx), Poll::Pending)
+            Pin::new(backoff).poll(cx).is_pending()
         } else {
             false
         };
