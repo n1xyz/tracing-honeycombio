@@ -1,6 +1,6 @@
 use crate::Url;
 use std::{
-    error,
+    error::{self, Error},
     fmt::{self, Debug},
     pin::Pin,
     task::{Context, Poll},
@@ -30,6 +30,16 @@ impl fmt::Display for BadRedirect {
 }
 
 impl error::Error for BadRedirect {}
+
+fn report(mut err: &(dyn std::error::Error + 'static)) -> String {
+    use std::fmt::Write as _;
+    let mut s = format!("{}", err);
+    while let Some(src) = err.source() {
+        let _ = write!(s, ": {}", src);
+        err = src;
+    }
+    s
+}
 
 pub trait Backend {
     type Err: std::fmt::Display;
@@ -87,10 +97,11 @@ impl Backend for ClientBackend {
             async move {
                 let resp = request_builder
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .header(reqwest::header::CONTENT_ENCODING, "zst")
+                    .header(reqwest::header::CONTENT_ENCODING, "zstd")
                     .body(body)
                     .send()
-                    .await?;
+                    .await
+                    .map_err(|e| report(&e))?;
                 let status = resp.status();
                 if !status.is_success() {
                     let body = resp.text().await.map_err(|e| -> Self::Err {
@@ -365,6 +376,12 @@ impl BackgroundTaskController {
     pub async fn shutdown(&self) {
         // Ignore the error. If no one is listening, it already shut down.
         let _ = self.sender.send(None).await;
+    }
+
+    /// Shut down the associated `BackgroundTask`. Panics if called within an asynchronous
+    /// execution context.
+    pub fn shutdown_blocking(&self) {
+        let _ = self.sender.blocking_send(None);
     }
 }
 
