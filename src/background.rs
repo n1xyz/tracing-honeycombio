@@ -1,6 +1,5 @@
 use crate::Url;
 use std::{
-    error::{self, Error},
     fmt::{self, Debug},
     pin::Pin,
     task::{Context, Poll},
@@ -29,7 +28,7 @@ impl fmt::Display for BadRedirect {
     }
 }
 
-impl error::Error for BadRedirect {}
+impl std::error::Error for BadRedirect {}
 
 fn report(mut err: &(dyn std::error::Error + 'static)) -> String {
     use std::fmt::Write as _;
