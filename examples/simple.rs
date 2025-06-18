@@ -4,7 +4,6 @@ use tracing_subscriber::layer::SubscriberExt;
 async fn main() {
     let api_key = std::env::var("HONEYCOMB_API_KEY")
         .expect("HONEYCOMB_API_KEY environment variable to be valid");
-    println!("{:#?}", api_key);
     let (layer, task, controller) = tracing_honeycombio::builder(&api_key)
         .build(tracing_honeycombio::HONEYCOMB_SERVER_US, "test")
         .unwrap();
