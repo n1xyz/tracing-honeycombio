@@ -1,17 +1,10 @@
 use chrono::Utc;
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant};
 use tokio::sync::mpsc;
 use tracing::{Level, Subscriber, span};
 use tracing_subscriber::registry::LookupSpan;
 
-use crate::{Fields, HoneycombEvent, HoneycombEventInner};
-
-pub struct Layer {
-    // TODO: custom value type
-    extra_fields: HashMap<String, serde_json::Value>,
-    service_name: Option<String>,
-    sender: mpsc::Sender<Option<HoneycombEvent>>,
-}
+use crate::{Fields, HoneycombEvent, HoneycombEventInner, TraceId};
 
 fn level_as_honeycomb_str(level: &Level) -> &'static str {
     match *level {
@@ -21,6 +14,34 @@ fn level_as_honeycomb_str(level: &Level) -> &'static str {
         Level::WARN => "warn",
         Level::ERROR => "error",
     }
+}
+
+struct Timings {
+    start: Instant,
+    idle: u64,
+    busy: u64,
+    last: Instant,
+    entered_depth: u64,
+}
+
+impl Timings {
+    fn new() -> Self {
+        let start = Instant::now();
+        Self {
+            start,
+            idle: 0,
+            busy: 0,
+            last: start,
+            entered_depth: 0,
+        }
+    }
+}
+
+pub struct Layer {
+    // TODO: custom value type
+    extra_fields: HashMap<String, serde_json::Value>,
+    service_name: Option<String>,
+    sender: mpsc::Sender<Option<HoneycombEvent>>,
 }
 
 impl Layer {
@@ -55,6 +76,13 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         let mut fields = Fields::default();
         attrs.record(&mut fields);
         extensions.insert(fields);
+        let timings = Timings::new();
+        extensions.insert(timings);
+        let trace_id = span
+            .parent()
+            .and_then(|p| p.extensions().get::<TraceId>().copied())
+            .unwrap_or_else(|| TraceId::generate());
+        extensions.insert(trace_id);
     }
 
     fn on_record(
@@ -73,16 +101,47 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         values.record(fields);
     }
 
+    fn on_enter(&self, id: &span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let span = ctx
+            .span(id)
+            .expect("span passed to on_enter is open, valid, and stored by subscriber");
+        if let Some(timings) = span.extensions_mut().get_mut::<Timings>() {
+            if timings.entered_depth == 0 {
+                let now = Instant::now();
+                timings.idle += now.saturating_duration_since(timings.last).as_nanos() as u64;
+                timings.last = now;
+            }
+            timings.entered_depth = timings.entered_depth.saturating_add(1);
+        }
+    }
+
+    fn on_exit(&self, id: &span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let span = ctx
+            .span(id)
+            .expect("span passed to on_exit is open, valid, and stored by subscriber");
+        if let Some(timings) = span.extensions_mut().get_mut::<Timings>() {
+            if timings.entered_depth == 0 {
+                let now = Instant::now();
+                timings.busy += now.saturating_duration_since(timings.last).as_nanos() as u64;
+                timings.last = now;
+            }
+            timings.entered_depth = timings.entered_depth.saturating_sub(0);
+        }
+    }
+
     fn on_event(&self, event: &tracing::Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let span = event.parent().and_then(|id| ctx.span(id)).or_else(|| {
+            event
+                .is_contextual()
+                .then(|| ctx.lookup_current())
+                .flatten()
+        });
         let timestamp = Utc::now();
         // removed: tracing-log support by calling .normalized_metadata()
         let meta = event.metadata();
         let mut fields = Fields::new(self.extra_fields.clone());
-        let span_id = ctx.current_span().id().cloned();
-        // parent will be None if event is child of current span
-        let leaf_span_id = event.parent().or_else(|| span_id.as_ref());
-        let parent_id = leaf_span_id.as_ref().and_then(|id| {
-            for span in ctx.span_scope(id)?.from_root() {
+        if let Some(ref associated_span) = span {
+            for span in associated_span.scope().from_root() {
                 fields.fields.extend(
                     span.extensions()
                         .get::<Fields>()
@@ -92,21 +151,19 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
                         .map(|(field, val)| (field.clone(), val.clone())),
                 );
             }
-
-            // first is current, second is parent
-            ctx.span_scope(&id)
-                .expect("lookup of same ID already suceeded")
-                .nth(1)
-                .map(|span| span.id())
-        });
+        }
         event.record(&mut fields);
         // don't care if channel closed. if capacity is reached, we have larger problems
         let _ = self.sender.try_send(Some(HoneycombEvent {
             time: timestamp,
             data: HoneycombEventInner {
-                span_id: span_id.map(|id| id.into_u64()),
-                parent_id: parent_id.map(|id| id.into_u64()),
+                span_id: span.as_ref().map(|s| s.id().into_u64()),
+                trace_id: span.and_then(|s| s.extensions().get::<TraceId>().copied()),
+                parent_span_id: None,
                 service_name: self.service_name.clone(),
+                duration_ms: None,
+                idle_ns: None,
+                busy_ns: None,
                 level: level_as_honeycomb_str(meta.level()),
                 name: meta.name().to_owned(),
                 target: meta.target().to_owned(),
@@ -116,12 +173,23 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
     }
 
     fn on_close(&self, id: span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let now = Instant::now();
         let timestamp = Utc::now();
         let span = ctx
             .span(&id)
             .expect("span passed to on_new_span is open, valid, and stored by subscriber");
-        let meta = span.metadata();
         let mut fields = Fields::new(self.extra_fields.clone());
+
+        let mut duration_ms = None;
+        let mut idle_ns = None;
+        let mut busy_ns = None;
+        if let Some(timings) = span.extensions().get::<Timings>() {
+            duration_ms = Some(now.saturating_duration_since(timings.start).as_millis() as u64);
+            idle_ns = Some(timings.idle);
+            busy_ns = Some(timings.busy);
+        }
+
+        let meta = span.metadata();
         let parent_id = span.parent().map(|p| p.id());
         if let Some(scope_iter) = parent_id.as_ref().and_then(|p_id| ctx.span_scope(p_id)) {
             for span in scope_iter.from_root() {
@@ -142,13 +210,19 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
                 .fields
                 .clone(),
         );
+        span.extensions_mut().remove::<Fields>();
+        let trace_id = span.extensions_mut().remove::<TraceId>();
 
         let _ = self.sender.try_send(Some(HoneycombEvent {
             time: timestamp,
             data: HoneycombEventInner {
                 span_id: Some(id.into_u64()),
-                parent_id: parent_id.map(|id| id.into_u64()),
+                trace_id,
+                parent_span_id: parent_id.map(|id| id.into_u64()),
                 service_name: self.service_name.clone(),
+                duration_ms,
+                idle_ns,
+                busy_ns,
                 level: level_as_honeycomb_str(meta.level()),
                 name: meta.name().to_owned(),
                 target: meta.target().to_owned(),
@@ -259,13 +333,21 @@ pub(crate) mod tests {
         assert_eq!(
             events
                 .iter()
-                .map(|evt| (evt.data.parent_id, evt.data.span_id.unwrap(),))
+                .map(|evt| evt.data.trace_id)
+                .collect::<Vec<_>>(),
+            std::iter::repeat_n(Some(events[0].data.trace_id.unwrap()), events.len())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            events
+                .iter()
+                .map(|evt| (evt.data.parent_span_id, evt.data.span_id.unwrap()))
                 .collect::<Vec<_>>(),
             vec![
-                (Some(parent_id.into_u64()), child_id.into_u64(),), // the event
-                (Some(parent_id.into_u64()), child_id.into_u64(),), // child_span closing
+                (None, child_id.into_u64(),),                             // the event
+                (Some(parent_id.into_u64()), child_id.into_u64(),),       // child_span closing
                 (Some(grandparent_id.into_u64()), parent_id.into_u64(),), // parent_span closing
-                (None, grandparent_id.into_u64())                   // grandparent_span closing
+                (None, grandparent_id.into_u64())                         // grandparent_span closing
             ]
         );
         assert_eq!(
@@ -295,10 +377,7 @@ pub(crate) mod tests {
             ev_map.get(OTEL_FIELD_SPAN_ID),
             Some(&json!(child_id.into_u64()))
         );
-        assert_eq!(
-            ev_map.get(OTEL_FIELD_PARENT_ID),
-            Some(&json!(parent_id.into_u64()))
-        );
+        assert_eq!(ev_map.get(OTEL_FIELD_PARENT_ID), None);
         assert_eq!(
             ev_map.get(OTEL_FIELD_SERVICE_NAME),
             Some(&json!("service_name"))
@@ -353,5 +432,41 @@ pub(crate) mod tests {
         assert_eq!(ev_map.get("parent_field"), Some(&json!(p_val)));
         assert_eq!(ev_map.get("grandparent_field"), Some(&json!(gp_val)));
         assert_eq!(ev_map.get("overridden_field"), Some(&json!(or_val_p)));
+    }
+
+    #[test]
+    fn explicit_parent() {
+        let (sender, mut receiver) = event_channel(16384);
+        let mut layer = Layer {
+            extra_fields: Default::default(),
+            service_name: Some("service_name".to_owned()),
+            sender,
+        };
+        layer
+            .extra_fields
+            .insert("my_extra_field".to_owned(), json!("extra_field_val"));
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        let parent_id = tracing::subscriber::with_default(subscriber, || {
+            let active_span = span!(Level::INFO, "active_span");
+            let _guard = active_span.enter();
+
+            let parent = span!(Level::INFO, "explicit_parent", parent_field = 40);
+            let parent_id = parent.id().unwrap();
+            tracing::event!(parent: &parent_id, Level::INFO, "message");
+
+            parent_id
+        });
+
+        // assert_eq!(receiver.len(), 1);
+        let mut events = Vec::with_capacity(1);
+        assert_eq!(receiver.blocking_recv_many(&mut events, 128), 3);
+        let event = events[0].take().unwrap();
+        assert_eq!(
+            event.data.fields.fields.get("message"),
+            Some(&json!("message"))
+        );
+        assert_eq!(event.data.parent_span_id, None);
+        assert_eq!(event.data.span_id, Some(parent_id.into_u64()));
     }
 }

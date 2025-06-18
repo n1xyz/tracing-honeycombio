@@ -1,6 +1,12 @@
 use chrono::{DateTime, Utc};
-use serde::Serialize;
-use std::{collections::HashMap, error};
+use rand::{Rng, SeedableRng, rngs};
+use serde::{Serialize, Serializer};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    error,
+    num::{NonZeroU64, NonZeroU128},
+};
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 
@@ -70,6 +76,101 @@ impl Visit for Fields {
     }
 }
 
+thread_local! {
+    /// Store random number generator for each thread
+    static CURRENT_RNG: RefCell<rngs::SmallRng> = RefCell::new(rngs::SmallRng::from_os_rng());
+}
+
+/// A 8-byte value which identifies a given span.
+///
+/// The id is valid if it contains at least one non-zero byte.
+#[derive(Clone, PartialEq, Eq, Copy, Hash)]
+pub struct SpanId(NonZeroU64);
+
+impl SpanId {
+    fn generate() -> Self {
+        CURRENT_RNG.with(|rng| Self::from(rng.borrow_mut().random::<NonZeroU64>()))
+    }
+}
+
+impl From<NonZeroU64> for SpanId {
+    fn from(value: NonZeroU64) -> Self {
+        SpanId(value)
+    }
+}
+
+impl std::fmt::Debug for SpanId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{:016x}", self.0))
+    }
+}
+
+impl std::fmt::Display for SpanId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{:016x}", self.0))
+    }
+}
+
+impl std::fmt::LowerHex for SpanId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
+impl Serialize for SpanId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(format!("{}", self).as_ref())
+    }
+}
+
+/// A 16-byte value which identifies a given trace.
+///
+/// The id is valid if it contains at least one non-zero byte.
+#[derive(Clone, PartialEq, Eq, Copy, Hash)]
+pub struct TraceId(NonZeroU128);
+
+impl TraceId {
+    fn generate() -> Self {
+        CURRENT_RNG.with(|rng| Self::from(rng.borrow_mut().random::<NonZeroU128>()))
+    }
+}
+
+impl From<NonZeroU128> for TraceId {
+    fn from(value: NonZeroU128) -> Self {
+        TraceId(value)
+    }
+}
+
+impl std::fmt::Debug for TraceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{:032x}", self.0))
+    }
+}
+
+impl std::fmt::Display for TraceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{:032x}", self.0))
+    }
+}
+
+impl std::fmt::LowerHex for TraceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
+impl Serialize for TraceId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(format!("{}", self).as_ref())
+    }
+}
+
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct HoneycombEvent {
     #[serde(serialize_with = "serialize_datetime_as_rfc3339")]
@@ -84,13 +185,25 @@ pub struct HoneycombEventInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub span_id: Option<u64>,
 
+    #[serde(rename = "trace.trace_id")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<TraceId>,
+
     #[serde(rename = "trace.parent_id")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<u64>,
+    pub parent_span_id: Option<u64>,
 
     #[serde(rename = "service.name")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_name: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_ns: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub busy_ns: Option<u64>,
+
     pub level: &'static str,
     pub name: String,
     pub target: String,

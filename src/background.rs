@@ -456,8 +456,12 @@ mod tests {
             time: Utc::now(),
             data: HoneycombEventInner {
                 span_id,
-                parent_id: None,
+                trace_id: None,
+                parent_span_id: None,
                 service_name: None,
+                duration_ms: None,
+                busy_ns: None,
+                idle_ns: None,
                 level: "INFO",
                 name: "name".to_owned(),
                 target: "target".to_owned(),
@@ -651,7 +655,7 @@ mod tests {
                 .headers()
                 .get(reqwest::header::CONTENT_ENCODING)
                 .and_then(|v| str::from_utf8(v.as_bytes()).ok()),
-            Some("zst")
+            Some("zstd")
         );
 
         let (parts, body) = request.into_parts();
