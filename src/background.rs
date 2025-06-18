@@ -461,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn bg_task_on_success() {
+    fn task_poll_submit() {
         use super::State;
         let waker = dummy_waker();
         let mut cx = Context::from_waker(&waker);
@@ -512,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn bg_task_handle_sender_drop() {
+    fn task_drop_channel_quits() {
         use super::State;
         let waker = dummy_waker();
         let mut cx = Context::from_waker(&waker);
@@ -524,8 +524,10 @@ mod tests {
         assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Ready(()));
     }
 
+    // need a runtime to even be able to construct tokio::time::sleep() futures, and
+    // making that part modular is more complexity than its worth
     #[tokio::test]
-    async fn event_queue_on_failure() {
+    async fn task_poll_retry() {
         use super::State;
         let waker = dummy_waker();
         let mut cx = Context::from_waker(&waker);
@@ -718,7 +720,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bg_task_simple() {
+    async fn end_to_end_submit() {
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::registry().with(tracing_subscriber::fmt::layer()),
         );
@@ -781,7 +783,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bg_error_handle_and_rety() {
+    async fn end_to_end_retry() {
         let (mock_layer, handle) = tracing_mock::layer::mock()
             .event(
                 expect::event()
