@@ -85,13 +85,19 @@ impl Backend for ClientBackend {
         let request_builder = self.http_client.post(self.honeycomb_endpoint_url.clone());
         Box::pin(
             async move {
-                request_builder
+                let resp = request_builder
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
                     .header(reqwest::header::CONTENT_ENCODING, "zst")
                     .body(body)
                     .send()
-                    .await?
-                    .error_for_status()?;
+                    .await?;
+                let status = resp.status();
+                if !status.is_success() {
+                    let body = resp.text().await.map_err(|e| -> Self::Err {
+                        format!("HTTP error {}, decoding body failed: {}", status, e).into()
+                    })?;
+                    return Err(format!("HTTP error {}: {:#?}", status, body).into());
+                }
                 Ok(())
             }
             .with_subscriber(NoSubscriber::default()),
