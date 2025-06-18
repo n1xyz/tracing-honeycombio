@@ -11,55 +11,6 @@ use tracing::{instrument::WithSubscriber, subscriber::NoSubscriber};
 
 use crate::HoneycombEvent;
 
-pub struct EventQueue {
-    pub inflight: Vec<HoneycombEvent>,
-    pub queue: Vec<HoneycombEvent>,
-}
-
-impl EventQueue {
-    pub fn new() -> Self {
-        Self {
-            inflight: Vec::new(),
-            queue: Vec::new(),
-        }
-    }
-
-    pub fn push(&mut self, event: HoneycombEvent) {
-        // TODO: add limit?
-        self.queue.push(event);
-    }
-
-    pub fn drop_outstanding(&mut self) -> usize {
-        let len = self.queue.len();
-        self.queue.clear();
-        len
-    }
-
-    pub fn handle_response_status(&mut self, result: Result<(), ()>) {
-        match result {
-            Ok(()) => self.inflight.clear(),
-            Err(()) => {
-                // return inflight to top of queue
-                self.inflight.append(&mut self.queue);
-                std::mem::swap(&mut self.inflight, &mut self.queue);
-            }
-        }
-    }
-
-    pub fn new_request_needed(&self) -> bool {
-        !self.queue.is_empty()
-    }
-
-    pub fn prepare_request(&mut self) -> Vec<HoneycombEvent> {
-        assert!(
-            self.inflight.is_empty(),
-            "cannot send new request when one is already inflight"
-        );
-        std::mem::swap(&mut self.inflight, &mut self.queue);
-        self.inflight.clone()
-    }
-}
-
 #[derive(Debug)]
 pub struct BadRedirect {
     status: u16,
@@ -80,30 +31,23 @@ impl fmt::Display for BadRedirect {
 
 impl error::Error for BadRedirect {}
 
-pub struct BackgroundTask {
-    honeycomb_endpoint_url: Url,
-    receiver: mpsc::Receiver<Option<HoneycombEvent>>,
-    queue: EventQueue,
-    compression_context: zstd::zstd_safe::CCtx<'static>,
-    http_client: reqwest::Client,
-    backoff_count: u32,
-    backoff: Option<Pin<Box<tokio::time::Sleep>>>,
-    quitting: bool,
-    send_task: Option<
-        Pin<Box<dyn Future<Output = Result<(), Box<dyn std::error::Error>>> + Send + 'static>>,
-    >,
+pub trait Backend {
+    type Err: std::fmt::Display;
+    type Fut: Future<Output = Result<(), Self::Err>>;
+
+    fn submit_events(&mut self, events: &Vec<HoneycombEvent>) -> Self::Fut;
 }
 
-impl BackgroundTask {
-    pub fn new(
-        honeycomb_endpoint_url: Url,
-        http_headers: reqwest::header::HeaderMap,
-        receiver: mpsc::Receiver<Option<HoneycombEvent>>,
-    ) -> BackgroundTask {
-        BackgroundTask {
-            receiver,
+pub struct ClientBackend {
+    pub honeycomb_endpoint_url: Url,
+    pub compression_context: zstd::zstd_safe::CCtx<'static>,
+    pub http_client: reqwest::Client,
+}
+
+impl ClientBackend {
+    pub fn new(honeycomb_endpoint_url: Url, http_headers: reqwest::header::HeaderMap) -> Self {
+        Self {
             honeycomb_endpoint_url,
-            queue: EventQueue::new(),
             compression_context: zstd::zstd_safe::CCtx::try_create().expect("zstd context allocation to succeed"),
             http_client: reqwest::Client::builder()
                 .user_agent(concat!(
@@ -123,14 +67,58 @@ impl BackgroundTask {
                     reqwest::redirect::Policy::default().redirect(a)
                 }))
                 .build()
-                .expect("building TLS backend initialization and loading system configuration to succeed"),
-            backoff_count: 0,
-            backoff: None,
-            quitting: false,
-            send_task: None,
-        }
+                .expect("building TLS backend initialization and loading system configuration to succeed") }
     }
+}
 
+impl Backend for ClientBackend {
+    type Err = Box<dyn std::error::Error>;
+    type Fut = Pin<Box<dyn Future<Output = Result<(), Self::Err>> + Send + 'static>>;
+
+    fn submit_events(&mut self, events: &Vec<HoneycombEvent>) -> Self::Fut {
+        let mut body = Vec::with_capacity(128);
+        let mut encoder = zstd::Encoder::with_context(&mut body, &mut self.compression_context);
+        let () = serde_json::to_writer(&mut encoder, &events)
+                    .expect("none of the tracing field types can fail to serialize and zstd compression should succeed");
+        encoder.finish().expect("zstd compression should succeed");
+
+        let request_builder = self.http_client.post(self.honeycomb_endpoint_url.clone());
+        Box::pin(
+            async move {
+                request_builder
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .header(reqwest::header::CONTENT_ENCODING, "zst")
+                    .body(body)
+                    .send()
+                    .await?
+                    .error_for_status()?;
+                Ok(())
+            }
+            .with_subscriber(NoSubscriber::default()),
+        )
+    }
+}
+
+struct BackgroundTaskInner<B> {
+    receiver: mpsc::Receiver<Option<HoneycombEvent>>,
+    backend: B,
+    backoff_count: u32,
+    quitting: bool,
+    inflight_reqs: Vec<HoneycombEvent>,
+}
+
+struct InflightState<F> {
+    send_task: F,
+}
+
+struct BackingOffState {
+    task: Pin<Box<tokio::time::Sleep>>,
+}
+
+impl<B: Backend + Unpin> BackgroundTaskInner<B>
+where
+    <B as Backend>::Fut: Unpin,
+{
     /// whether the send queue should be dropped, and the backoff duration
     fn backoff_time(&self) -> (bool, Duration) {
         let backoff_time = if self.backoff_count >= 1 {
@@ -147,106 +135,213 @@ impl BackgroundTask {
             std::cmp::min(backoff_time, Duration::from_secs(600)),
         )
     }
-}
 
-impl<'a> Future for BackgroundTask {
-    type Output = ();
+    fn poll_idle(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> (Poll<()>, Option<State<<B as Backend>::Fut>>) {
+        // invariant
+        assert!(self.inflight_reqs.is_empty());
 
-    // TODO: in order to implement bounded memory usage by conditionally polling channel,
-    // remove EventQueue and rewrite this function as a state machine
-    fn poll(mut self: Pin<&mut BackgroundTask>, cx: &mut Context<'_>) -> Poll<()> {
-        // prevent infinite log recursion
-        let mut default_guard = tracing::subscriber::set_default(NoSubscriber::default());
+        let _default_guard = tracing::subscriber::set_default(NoSubscriber::default());
 
-        while let Poll::Ready(maybe_maybe_item) = Pin::new(&mut self.receiver).poll_recv(cx) {
-            match maybe_maybe_item {
-                Some(Some(item)) => self.queue.push(item),
-                Some(None) => self.quitting = true, // Explicit close.
-                None => self.quitting = true,       // The sender was dropped.
+        // nothing is inflight, can safely quit
+        if self.quitting {
+            return (Poll::Ready(()), None);
+        }
+
+        // separate vec because self.inflight_reqs doesn't hold Options
+        let mut msgs: Vec<Option<HoneycombEvent>> = Vec::new();
+        match Pin::new(&mut self.receiver).poll_recv_many(cx, &mut msgs, 1024) {
+            Poll::Pending => return (Poll::Pending, None),
+            Poll::Ready(0) => {
+                // channel closed (since recv limit is nonzero)
+                self.quitting = true;
+                return (Poll::Ready(()), None);
             }
+            Poll::Ready(1..) => {}
         }
 
-        let mut backing_off = if let Some(backoff) = &mut self.backoff {
-            Pin::new(backoff).poll(cx).is_pending()
-        } else {
-            false
-        };
-        if !backing_off {
-            self.backoff = None;
-        }
-        loop {
-            if let Some(send_task) = &mut self.send_task {
-                match Pin::new(send_task).poll(cx) {
-                    Poll::Ready(res) => {
-                        if let Err(e) = &res {
-                            let (drop_outstanding, backoff_time) = self.backoff_time();
-                            drop(default_guard);
-                            tracing::error!(
-                                error_count = self.backoff_count + 1,
-                                ?backoff_time,
-                                error = %e,
-                                "couldn't send logs to honeycomb",
-                            );
-                            default_guard =
-                                tracing::subscriber::set_default(NoSubscriber::default());
-                            if drop_outstanding {
-                                let num_dropped: usize = self.queue.drop_outstanding();
-                                drop(default_guard);
-                                tracing::error!(
-                                    num_dropped,
-                                    "dropped outstanding messages due to sending errors",
-                                );
-                                default_guard =
-                                    tracing::subscriber::set_default(NoSubscriber::default());
-                            }
-                            self.backoff = Some(Box::pin(tokio::time::sleep(backoff_time)));
-                            self.backoff_count += 1;
-                            backing_off = true;
-                        } else {
-                            self.backoff_count = 0;
-                        }
-                        self.queue.handle_response_status(res.map_err(|_| ()));
-                        self.send_task = None;
-                    }
-                    Poll::Pending => {}
+        let mut msgs_iter = msgs.into_iter();
+        while let Some(msg) = msgs_iter.next() {
+            match msg {
+                Some(event) => self.inflight_reqs.push(event),
+                None => {
+                    // explicit close
+                    self.quitting = true;
+                    break; // drop following events
                 }
             }
-            if self.send_task.is_none() && !backing_off && self.queue.new_request_needed() {
-                let events = self.queue.prepare_request();
-                let mut body = Vec::with_capacity(128);
-                let mut encoder =
-                    zstd::Encoder::with_context(&mut body, &mut self.compression_context);
-                let () = serde_json::to_writer(&mut encoder, &events)
-                    .expect("none of the tracing field types can fail to serialize and zstd compression should succeed");
-                encoder.finish().expect("zstd compression should succeed");
+        }
 
-                // TODO: compress? docs mention supported compression formats
-                let request_builder = self.http_client.post(self.honeycomb_endpoint_url.clone());
-                self.send_task = Some(Box::pin(
-                    async move {
-                        request_builder
-                            .header(reqwest::header::CONTENT_TYPE, "application/json")
-                            .header(reqwest::header::CONTENT_ENCODING, "zst")
-                            .body(body)
-                            .send()
-                            .await?
-                            .error_for_status()?;
-                        Ok(())
+        if !self.inflight_reqs.is_empty() {
+            let new_state = self.transition_inflight();
+            cx.waker().wake_by_ref();
+            return (Poll::Pending, Some(new_state));
+        }
+
+        // no requests to send
+        if self.quitting {
+            (Poll::Ready(()), None)
+        } else {
+            (Poll::Pending, None)
+        }
+    }
+
+    fn transition_inflight(mut self: Pin<&mut Self>) -> State<<B as Backend>::Fut> {
+        let Self {
+            backend,
+            inflight_reqs,
+            ..
+        } = &mut *self;
+        let fut = backend.submit_events(&inflight_reqs);
+        State::Inflight(InflightState { send_task: fut })
+    }
+
+    fn poll_inflight(
+        mut self: Pin<&mut Self>,
+        state: &mut InflightState<B::Fut>,
+        cx: &mut Context<'_>,
+    ) -> (Poll<()>, Option<State<<B as Backend>::Fut>>) {
+        let mut default_guard = tracing::subscriber::set_default(NoSubscriber::default());
+
+        let res = match Pin::new(&mut state.send_task).poll(cx) {
+            Poll::Pending => return (Poll::Pending, None),
+            Poll::Ready(res) => res,
+        };
+        match res {
+            Ok(()) => {
+                let new_state = self.transition_idle();
+                cx.waker().wake_by_ref();
+                (Poll::Pending, Some(new_state))
+            }
+            Err(e) => {
+                let (drop_outstanding, backoff_time) = self.backoff_time();
+                drop(default_guard);
+                tracing::error!(
+                    error_count = self.backoff_count + 1,
+                    ?backoff_time,
+                    error = %e,
+                    "couldn't send logs to honeycomb",
+                );
+                default_guard = tracing::subscriber::set_default(NoSubscriber::default());
+                if drop_outstanding {
+                    let num_dropped: usize = self.inflight_reqs.len();
+                    self.inflight_reqs.clear();
+                    drop(default_guard);
+                    tracing::error!(
+                        num_dropped,
+                        "dropped outstanding messages due to sending errors",
+                    );
+                    #[allow(unused_assignments)]
+                    {
+                        default_guard = tracing::subscriber::set_default(NoSubscriber::default());
                     }
-                    .with_subscriber(NoSubscriber::default()),
-                ));
-            } else {
-                break;
+                }
+                let new_state = self.transition_backoff(backoff_time);
+                cx.waker().wake_by_ref();
+                (Poll::Pending, Some(new_state))
             }
         }
-        // todo: when rewriting this consider finishing retries before quitting
-        if self.quitting && self.send_task.is_none() {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
+    }
+
+    fn transition_idle(mut self: Pin<&mut Self>) -> State<<B as Backend>::Fut> {
+        self.inflight_reqs.clear();
+        State::Idle
+    }
+
+    fn transition_backoff(
+        mut self: Pin<&mut Self>,
+        backoff_time: Duration,
+    ) -> State<<B as Backend>::Fut> {
+        self.backoff_count += 1;
+        State::BackingOff(BackingOffState {
+            task: Box::pin(tokio::time::sleep(backoff_time)),
+        })
+    }
+
+    fn poll_backoff(
+        self: Pin<&mut Self>,
+        state: &mut BackingOffState,
+        cx: &mut Context<'_>,
+    ) -> (Poll<()>, Option<State<<B as Backend>::Fut>>) {
+        let _default_guard = tracing::subscriber::set_default(NoSubscriber::default());
+
+        match Pin::new(&mut state.task).poll(cx) {
+            Poll::Pending => (Poll::Pending, None),
+            Poll::Ready(()) => {
+                let new_state = self.transition_inflight();
+                cx.waker().wake_by_ref();
+                (Poll::Pending, Some(new_state))
+            }
         }
     }
 }
+
+enum State<F> {
+    Idle,
+    Inflight(InflightState<F>),
+    BackingOff(BackingOffState),
+}
+
+impl<F> State<F> {
+    fn initial() -> Self {
+        Self::Idle
+    }
+}
+
+pub struct BackgroundTaskFut<B: Backend>(BackgroundTaskInner<B>, State<B::Fut>);
+
+impl BackgroundTaskFut<ClientBackend> {
+    pub fn new(
+        honeycomb_endpoint_url: Url,
+        http_headers: reqwest::header::HeaderMap,
+        receiver: mpsc::Receiver<Option<HoneycombEvent>>,
+    ) -> Self {
+        Self::new_with_backend(
+            ClientBackend::new(honeycomb_endpoint_url, http_headers),
+            receiver,
+        )
+    }
+}
+
+impl<B: Backend> BackgroundTaskFut<B> {
+    pub fn new_with_backend(backend: B, receiver: mpsc::Receiver<Option<HoneycombEvent>>) -> Self {
+        Self(
+            BackgroundTaskInner {
+                receiver,
+                backend,
+                backoff_count: 0,
+                quitting: false,
+                inflight_reqs: Vec::new(),
+            },
+            State::initial(),
+        )
+    }
+}
+
+impl<B: Backend + Unpin> Future for BackgroundTaskFut<B>
+where
+    B: Unpin,
+    B::Fut: Unpin,
+{
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let Self(inner, curr_state) = &mut *self;
+        let (poll, sv) = match curr_state {
+            State::Idle => Pin::new(inner).poll_idle(cx),
+            State::Inflight(state) => Pin::new(inner).poll_inflight(state, cx),
+            State::BackingOff(state) => Pin::new(inner).poll_backoff(state, cx),
+        };
+        if let Some(new_state) = sv {
+            *curr_state = new_state;
+        };
+        poll
+    }
+}
+
+pub type BackgroundTask = BackgroundTaskFut<ClientBackend>;
 
 /// Handle to cleanly shut down the `BackgroundTask`.
 ///
@@ -272,7 +367,8 @@ mod tests {
     use super::*;
     use crate::{
         HONEYCOMB_AUTH_HEADER_NAME, HoneycombEventInner,
-        background::EventQueue,
+        builder::DEFAULT_CHANNEL_SIZE,
+        event_channel,
         layer::tests::{OTEL_FIELD_LEVEL, OTEL_FIELD_SPAN_ID},
     };
     use axum::{
@@ -291,10 +387,47 @@ mod tests {
         collections::{HashMap, hash_map::Entry},
         io::Cursor,
         sync::{Arc, Mutex, RwLock},
+        task::{RawWaker, RawWakerVTable, Waker},
     };
     use tracing::Level;
     use tracing_mock::expect;
     use tracing_subscriber::{Layer, filter, layer::SubscriberExt};
+
+    struct RecorderBackend {
+        events: Vec<HoneycombEvent>,
+        induce_failure: bool,
+    }
+
+    impl RecorderBackend {
+        fn new() -> Self {
+            Self {
+                events: Vec::new(),
+                induce_failure: false,
+            }
+        }
+
+        fn new_induce_failure() -> Self {
+            Self {
+                events: Vec::new(),
+                induce_failure: true,
+            }
+        }
+    }
+
+    impl Backend for RecorderBackend {
+        type Err = Box<dyn std::error::Error>;
+        type Fut = Pin<Box<dyn Future<Output = Result<(), Self::Err>>>>;
+
+        fn submit_events(&mut self, events: &Vec<HoneycombEvent>) -> Self::Fut {
+            let ret = if self.induce_failure {
+                Err(Box::<dyn std::error::Error>::from("test error"))
+            } else {
+                self.events.append(&mut events.clone());
+                Ok(())
+            };
+            Box::pin(async move { ret })
+        }
+    }
 
     fn new_event(span_id: Option<u64>) -> HoneycombEvent {
         HoneycombEvent {
@@ -311,75 +444,133 @@ mod tests {
         }
     }
 
-    #[test]
-    fn event_queue_on_success() {
-        let mut queue = EventQueue::new();
-        assert!(!queue.new_request_needed());
-        let evt = new_event(Some(0));
-        queue.push(evt.clone());
-        queue.push(evt.clone());
-        assert_eq!((queue.inflight.len(), queue.queue.len()), (0, 2));
-        assert!(queue.new_request_needed());
-        assert_eq!(queue.prepare_request().len(), 2);
-        assert_eq!((queue.inflight.len(), queue.queue.len()), (2, 0));
-        queue.push(HoneycombEvent {
-            time: evt.time,
-            data: HoneycombEventInner {
-                span_id: Some(1),
-                ..evt.data.clone()
-            },
-        });
+    fn dummy_raw_waker() -> RawWaker {
+        fn clone(_: *const ()) -> RawWaker {
+            dummy_raw_waker()
+        }
+        fn wake(_: *const ()) {}
+        fn wake_by_ref(_: *const ()) {}
+        fn drop(_: *const ()) {}
 
-        queue.handle_response_status(Ok(()));
-        assert!(
-            queue.inflight.is_empty(),
-            "nothing inflight after response received"
-        );
-        assert_eq!(
-            queue
-                .queue
-                .iter()
-                .map(|i| i.data.span_id.unwrap())
-                .collect::<Vec<_>>(),
-            vec![1],
-            "queue unchanged, successful events not returned to queue"
-        );
+        let vtable = &RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+        RawWaker::new(std::ptr::null(), vtable)
+    }
+
+    fn dummy_waker() -> Waker {
+        unsafe { Waker::from_raw(dummy_raw_waker()) }
     }
 
     #[test]
-    fn event_queue_on_failure() {
-        let mut queue = EventQueue::new();
-        assert!(!queue.new_request_needed());
-        let evt = new_event(Some(0));
-        queue.push(evt.clone());
-        queue.push(evt.clone());
-        assert_eq!((queue.inflight.len(), queue.queue.len()), (0, 2));
-        assert!(queue.new_request_needed());
-        assert_eq!(queue.prepare_request().len(), 2);
-        assert_eq!((queue.inflight.len(), queue.queue.len()), (2, 0));
-        queue.push(HoneycombEvent {
-            time: evt.time,
-            data: HoneycombEventInner {
-                span_id: Some(1),
-                ..evt.data.clone()
-            },
-        });
+    fn bg_task_on_success() {
+        use super::State;
+        let waker = dummy_waker();
+        let mut cx = Context::from_waker(&waker);
+        let (sender, receiver) = event_channel(DEFAULT_CHANNEL_SIZE);
+        let mut task = BackgroundTaskFut::new_with_backend(RecorderBackend::new(), receiver);
+        assert!(matches!(task.1, State::Idle));
 
-        queue.handle_response_status(Err(()));
-        assert!(
-            queue.inflight.is_empty(),
-            "nothing inflight after response received"
-        );
-        assert_eq!(queue.queue.len(), 3, "failed responses returned to queue");
+        let evt = new_event(Some(0));
+        sender.blocking_send(Some(evt.clone())).unwrap();
+        sender.blocking_send(Some(evt.clone())).unwrap();
+
+        // Idle => Inflight
+        assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Pending);
+        assert!(matches!(task.1, State::Inflight(_)));
+        assert_eq!(task.0.inflight_reqs.len(), 2);
+
+        // add to queue while task is not processing new events
+        sender
+            .blocking_send(Some(HoneycombEvent {
+                time: evt.time,
+                data: HoneycombEventInner {
+                    span_id: Some(1),
+                    ..evt.data.clone()
+                },
+            }))
+            .unwrap();
+
+        // send_task completes with Ok => idle
+        assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Pending);
+        assert!(matches!(task.1, State::Idle));
+        assert_eq!(task.0.backend.events.len(), 2);
+        assert_eq!(task.0.backend.events[0], evt);
+        assert_eq!(task.0.backend.events[1], evt);
+
+        assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Pending);
+        assert!(matches!(task.1, State::Inflight(_)));
+        assert_eq!(task.0.backend.events.len(), 3);
+        assert_eq!(task.0.backend.events[2].data.span_id, Some(1));
+
+        assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Pending);
+        assert!(matches!(task.1, State::Idle));
+        assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Pending);
+        assert!(matches!(task.1, State::Idle));
+
+        sender.blocking_send(None).unwrap();
+        assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Ready(()));
+        assert!(matches!(task.1, State::Idle));
+    }
+
+    #[test]
+    fn bg_task_handle_sender_drop() {
+        use super::State;
+        let waker = dummy_waker();
+        let mut cx = Context::from_waker(&waker);
+        let (sender, receiver) = event_channel(DEFAULT_CHANNEL_SIZE);
+        let mut task = BackgroundTaskFut::new_with_backend(RecorderBackend::new(), receiver);
+        assert!(matches!(task.1, State::Idle));
+
+        drop(sender);
+        assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Ready(()));
+    }
+
+    #[tokio::test]
+    async fn event_queue_on_failure() {
+        use super::State;
+        let waker = dummy_waker();
+        let mut cx = Context::from_waker(&waker);
+        let (sender, receiver) = event_channel(DEFAULT_CHANNEL_SIZE);
+        let mut task =
+            BackgroundTaskFut::new_with_backend(RecorderBackend::new_induce_failure(), receiver);
+        assert!(matches!(task.1, State::Idle));
+
+        let evt = new_event(Some(0));
+        sender.send(Some(evt.clone())).await.unwrap();
+        sender.send(Some(evt.clone())).await.unwrap();
+
         assert_eq!(
-            queue
-                .queue
-                .iter()
-                .map(|i| i.data.span_id.unwrap())
-                .collect::<Vec<_>>(),
-            vec![0, 0, 1],
-            "failed requests returned to queue ahead of unsent requests"
+            task.0.backend.events.len(),
+            0,
+            "no events processed until poll"
         );
+        assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Pending);
+        assert!(matches!(task.1, State::Inflight(_)));
+
+        assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Pending);
+        match &mut task.1 {
+            State::BackingOff(BackingOffState { task }) => task.await,
+            _ => panic!("expected task to be in BackingOff state"),
+        }
+        assert_eq!(
+            task.0.backend.events.len(),
+            0,
+            "events fail to submit due to induce_failure"
+        );
+
+        task.0.backend.induce_failure = false;
+        assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Pending);
+        assert!(matches!(task.1, State::Inflight(_)));
+
+        assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Pending);
+        assert!(matches!(task.1, State::Idle));
+        assert_eq!(
+            task.0.backend.events.len(),
+            2,
+            "events submit successfully after induce_failure disabled"
+        );
+
+        drop(sender);
+        assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Ready(()));
     }
 
     const MOCK_API_KEY: &'static str = "xxx-testing-api-key-xxx";

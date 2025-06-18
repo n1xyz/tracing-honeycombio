@@ -11,7 +11,7 @@ pub const HONEYCOMB_SERVER_EU: &'static str = "https://api.eu1.honeycomb.io/";
 
 pub const HONEYCOMB_AUTH_HEADER_NAME: &'static str = "x-honeycomb-team";
 
-const DEFAULT_CHANNEL_SIZE: usize = 1024;
+pub const DEFAULT_CHANNEL_SIZE: usize = 1024;
 
 /// Builder for constructing a [`Layer`] and its corresponding
 /// [`BackgroundTask`].
