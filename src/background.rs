@@ -388,7 +388,7 @@ impl BackgroundTaskController {
 mod tests {
     use super::*;
     use crate::{
-        HONEYCOMB_AUTH_HEADER_NAME, HoneycombEventInner,
+        HONEYCOMB_AUTH_HEADER_NAME, HoneycombEventInner, SpanId,
         builder::DEFAULT_CHANNEL_SIZE,
         event_channel,
         layer::tests::{OTEL_FIELD_LEVEL, OTEL_FIELD_SPAN_ID},
@@ -408,6 +408,7 @@ mod tests {
     use std::{
         collections::{HashMap, hash_map::Entry},
         io::Cursor,
+        num::NonZeroU64,
         sync::{Arc, Mutex, RwLock},
         task::{RawWaker, RawWakerVTable, Waker},
     };
@@ -455,7 +456,7 @@ mod tests {
         HoneycombEvent {
             time: Utc::now(),
             data: HoneycombEventInner {
-                span_id,
+                span_id: span_id.map(|i| SpanId::from(NonZeroU64::new(i).unwrap())),
                 trace_id: None,
                 parent_span_id: None,
                 service_name: None,
@@ -495,7 +496,7 @@ mod tests {
         let mut task = BackgroundTaskFut::new_with_backend(RecorderBackend::new(), receiver);
         assert!(matches!(task.1, State::Idle));
 
-        let evt = new_event(Some(0));
+        let evt = new_event(Some(1234));
         sender.blocking_send(Some(evt.clone())).unwrap();
         sender.blocking_send(Some(evt.clone())).unwrap();
 
@@ -509,7 +510,7 @@ mod tests {
             .blocking_send(Some(HoneycombEvent {
                 time: evt.time,
                 data: HoneycombEventInner {
-                    span_id: Some(1),
+                    span_id: Some(SpanId::from(NonZeroU64::new(1).unwrap())),
                     ..evt.data.clone()
                 },
             }))
@@ -525,7 +526,10 @@ mod tests {
         assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Pending);
         assert!(matches!(task.1, State::Inflight(_)));
         assert_eq!(task.0.backend.events.len(), 3);
-        assert_eq!(task.0.backend.events[2].data.span_id, Some(1));
+        assert_eq!(
+            task.0.backend.events[2].data.span_id,
+            Some(SpanId::from(NonZeroU64::new(1).unwrap()))
+        );
 
         assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Pending);
         assert!(matches!(task.1, State::Idle));
@@ -562,7 +566,7 @@ mod tests {
             BackgroundTaskFut::new_with_backend(RecorderBackend::new_induce_failure(), receiver);
         assert!(matches!(task.1, State::Idle));
 
-        let evt = new_event(Some(0));
+        let evt = new_event(Some(1234));
         sender.send(Some(evt.clone())).await.unwrap();
         sender.send(Some(evt.clone())).await.unwrap();
 

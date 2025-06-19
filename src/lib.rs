@@ -183,7 +183,7 @@ pub struct HoneycombEvent {
 pub struct HoneycombEventInner {
     #[serde(rename = "trace.span_id")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub span_id: Option<u64>,
+    pub span_id: Option<SpanId>,
 
     #[serde(rename = "trace.trace_id")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -191,7 +191,7 @@ pub struct HoneycombEventInner {
 
     #[serde(rename = "trace.parent_id")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_span_id: Option<u64>,
+    pub parent_span_id: Option<SpanId>,
 
     #[serde(rename = "service.name")]
     #[serde(skip_serializing_if = "Option::is_none")]

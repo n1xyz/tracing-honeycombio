@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tracing::{Level, Subscriber, span};
 use tracing_subscriber::registry::LookupSpan;
 
-use crate::{Fields, HoneycombEvent, HoneycombEventInner, TraceId};
+use crate::{Fields, HoneycombEvent, HoneycombEventInner, SpanId, TraceId};
 
 fn level_as_honeycomb_str(level: &Level) -> &'static str {
     match *level {
@@ -83,6 +83,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
             .and_then(|p| p.extensions().get::<TraceId>().copied())
             .unwrap_or_else(|| TraceId::generate());
         extensions.insert(trace_id);
+        extensions.insert(SpanId::generate());
     }
 
     fn on_record(
@@ -157,7 +158,9 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         let _ = self.sender.try_send(Some(HoneycombEvent {
             time: timestamp,
             data: HoneycombEventInner {
-                span_id: span.as_ref().map(|s| s.id().into_u64()),
+                span_id: span
+                    .as_ref()
+                    .and_then(|s| s.extensions().get::<SpanId>().copied()),
                 trace_id: span.and_then(|s| s.extensions().get::<TraceId>().copied()),
                 parent_span_id: None,
                 service_name: self.service_name.clone(),
@@ -216,9 +219,11 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         let _ = self.sender.try_send(Some(HoneycombEvent {
             time: timestamp,
             data: HoneycombEventInner {
-                span_id: Some(id.into_u64()),
+                span_id: span.extensions_mut().remove::<SpanId>(),
                 trace_id,
-                parent_span_id: parent_id.map(|id| id.into_u64()),
+                parent_span_id: span
+                    .parent()
+                    .and_then(|p| p.extensions().get::<SpanId>().copied()),
                 service_name: self.service_name.clone(),
                 duration_ms,
                 idle_ns,
@@ -238,7 +243,7 @@ pub(crate) mod tests {
     use crate::event_channel;
     use serde_json::{Value, json};
     use tracing::Level;
-    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::{Registry, layer::SubscriberExt};
 
     pub(crate) const OTEL_FIELD_SPAN_ID: &'static str = "trace.span_id";
     // const OTEL_FIELD_TRACE_ID: &'static str = "trace.trace_id";
@@ -257,6 +262,18 @@ pub(crate) mod tests {
                 val
             );
         }
+    }
+
+    fn get_span_id(span: &tracing::Span) -> SpanId {
+        tracing::Dispatch::default()
+            .downcast_ref::<Registry>()
+            .unwrap()
+            .span(&span.id().unwrap())
+            .unwrap()
+            .extensions()
+            .get::<SpanId>()
+            .copied()
+            .unwrap()
     }
 
     #[test]
@@ -309,9 +326,9 @@ pub(crate) mod tests {
                     "my event"
                 );
                 (
-                    grandparent_span.id().unwrap(),
-                    parent_span.id().unwrap(),
-                    child_span.id().unwrap(),
+                    get_span_id(&grandparent_span),
+                    get_span_id(&parent_span),
+                    get_span_id(&child_span),
                 )
             });
         let after = Utc::now();
@@ -344,10 +361,10 @@ pub(crate) mod tests {
                 .map(|evt| (evt.data.parent_span_id, evt.data.span_id.unwrap()))
                 .collect::<Vec<_>>(),
             vec![
-                (None, child_id.into_u64(),),                             // the event
-                (Some(parent_id.into_u64()), child_id.into_u64(),),       // child_span closing
-                (Some(grandparent_id.into_u64()), parent_id.into_u64(),), // parent_span closing
-                (None, grandparent_id.into_u64())                         // grandparent_span closing
+                (None, child_id),                  // the event
+                (Some(parent_id), child_id),       // child_span closing
+                (Some(grandparent_id), parent_id), // parent_span closing
+                (None, grandparent_id)             // grandparent_span closing
             ]
         );
         assert_eq!(
@@ -373,10 +390,7 @@ pub(crate) mod tests {
         };
         check_ev_map_depth_one(&ev_map);
 
-        assert_eq!(
-            ev_map.get(OTEL_FIELD_SPAN_ID),
-            Some(&json!(child_id.into_u64()))
-        );
+        assert_eq!(ev_map.get(OTEL_FIELD_SPAN_ID), Some(&json!(child_id)));
         assert_eq!(ev_map.get(OTEL_FIELD_PARENT_ID), None);
         assert_eq!(
             ev_map.get(OTEL_FIELD_SERVICE_NAME),
@@ -419,13 +433,10 @@ pub(crate) mod tests {
         };
         check_ev_map_depth_one(&ev_map);
 
-        assert_eq!(
-            ev_map.get(OTEL_FIELD_SPAN_ID),
-            Some(&json!(parent_id.into_u64()))
-        );
+        assert_eq!(ev_map.get(OTEL_FIELD_SPAN_ID), Some(&json!(parent_id)));
         assert_eq!(
             ev_map.get(OTEL_FIELD_PARENT_ID),
-            Some(&json!(grandparent_id.into_u64()))
+            Some(&json!(grandparent_id))
         );
         assert_eq!(ev_map.get("event_field"), None);
         assert_eq!(ev_map.get("child_field"), None);
@@ -455,7 +466,7 @@ pub(crate) mod tests {
             let parent_id = parent.id().unwrap();
             tracing::event!(parent: &parent_id, Level::INFO, "message");
 
-            parent_id
+            get_span_id(&parent)
         });
 
         // assert_eq!(receiver.len(), 1);
@@ -467,6 +478,6 @@ pub(crate) mod tests {
             Some(&json!("message"))
         );
         assert_eq!(event.data.parent_span_id, None);
-        assert_eq!(event.data.span_id, Some(parent_id.into_u64()));
+        assert_eq!(event.data.span_id, Some(parent_id));
     }
 }
