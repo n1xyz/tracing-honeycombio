@@ -199,6 +199,10 @@ pub struct HoneycombEventInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_name: Option<String>,
 
+    #[serde(rename = "meta.annotation_type")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation_type: Option<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

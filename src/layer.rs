@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use std::{collections::HashMap, time::Instant};
 use tokio::sync::mpsc;
 use tracing::{Level, Subscriber, span};
@@ -17,7 +17,8 @@ fn level_as_honeycomb_str(level: &Level) -> &'static str {
 }
 
 struct Timings {
-    start: Instant,
+    start_instant: Instant,
+    start_dt: DateTime<Utc>,
     idle: u64,
     busy: u64,
     last: Instant,
@@ -26,12 +27,14 @@ struct Timings {
 
 impl Timings {
     fn new() -> Self {
-        let start = Instant::now();
+        let start_instant = Instant::now();
+        let start_dt = Utc::now();
         Self {
-            start,
+            start_instant,
+            start_dt,
             idle: 0,
             busy: 0,
-            last: start,
+            last: start_instant,
             entered_depth: 0,
         }
     }
@@ -158,12 +161,13 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         let _ = self.sender.try_send(Some(HoneycombEvent {
             time: timestamp,
             data: HoneycombEventInner {
-                span_id: span
+                span_id: None,
+                trace_id: span
                     .as_ref()
-                    .and_then(|s| s.extensions().get::<SpanId>().copied()),
-                trace_id: span.and_then(|s| s.extensions().get::<TraceId>().copied()),
-                parent_span_id: None,
+                    .and_then(|s| s.extensions().get::<TraceId>().copied()),
+                parent_span_id: span.and_then(|s| s.extensions().get::<SpanId>().copied()),
                 service_name: self.service_name.clone(),
+                annotation_type: Some("span_event".to_owned()),
                 duration_ms: None,
                 idle_ns: None,
                 busy_ns: None,
@@ -177,7 +181,6 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
 
     fn on_close(&self, id: span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
         let now = Instant::now();
-        let timestamp = Utc::now();
         let span = ctx
             .span(&id)
             .expect("span passed to on_new_span is open, valid, and stored by subscriber");
@@ -186,11 +189,17 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         let mut duration_ms = None;
         let mut idle_ns = None;
         let mut busy_ns = None;
-        if let Some(timings) = span.extensions().get::<Timings>() {
-            duration_ms = Some(now.saturating_duration_since(timings.start).as_millis() as u64);
+        let timestamp = if let Some(timings) = span.extensions().get::<Timings>() {
+            duration_ms = Some(
+                now.saturating_duration_since(timings.start_instant)
+                    .as_millis() as u64,
+            );
             idle_ns = Some(timings.idle);
             busy_ns = Some(timings.busy);
-        }
+            timings.start_dt
+        } else {
+            Utc::now()
+        };
 
         let meta = span.metadata();
         let parent_id = span.parent().map(|p| p.id());
@@ -225,6 +234,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
                     .parent()
                     .and_then(|p| p.extensions().get::<SpanId>().copied()),
                 service_name: self.service_name.clone(),
+                annotation_type: None,
                 duration_ms,
                 idle_ns,
                 busy_ns,

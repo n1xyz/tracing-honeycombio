@@ -87,7 +87,7 @@ impl Backend for ClientBackend {
     fn submit_events(&mut self, events: &Vec<HoneycombEvent>) -> Self::Fut {
         let mut body = Vec::with_capacity(128);
         let mut encoder = zstd::Encoder::with_context(&mut body, &mut self.compression_context);
-        let () = serde_json::to_writer(&mut encoder, &events)
+        let () = serde_json::to_writer(&mut encoder, events)
                     .expect("none of the tracing field types can fail to serialize and zstd compression should succeed");
         encoder.finish().expect("zstd compression should succeed");
 
@@ -460,6 +460,7 @@ mod tests {
                 trace_id: None,
                 parent_span_id: None,
                 service_name: None,
+                annotation_type: None,
                 duration_ms: None,
                 busy_ns: None,
                 idle_ns: None,

@@ -19,19 +19,9 @@ async fn main() {
     {
         let span = tracing::span!(Level::INFO, "global span");
         let _enter = span.enter();
-        tracing::event!(
-            tracing::Level::INFO,
-            meta.annotation_type = "span_event",
-            value = 42,
-            "start"
-        );
+        tracing::event!(tracing::Level::INFO, value = 42, "start");
         tokio::time::sleep(Duration::from_millis(100)).await;
-        tracing::event!(
-            tracing::Level::INFO,
-            meta.annotation_type = "span_event",
-            value = 42,
-            "end"
-        );
+        tracing::event!(tracing::Level::INFO, value = 42, "end");
     }
 
     controller.shutdown().await;
