@@ -246,7 +246,7 @@ pub(crate) mod tests {
     use tracing_subscriber::{Registry, layer::SubscriberExt};
 
     pub(crate) const OTEL_FIELD_SPAN_ID: &'static str = "trace.span_id";
-    // const OTEL_FIELD_TRACE_ID: &'static str = "trace.trace_id";
+    pub(crate) const OTEL_FIELD_TRACE_ID: &'static str = "trace.trace_id";
     pub(crate) const OTEL_FIELD_PARENT_ID: &'static str = "trace.parent_id";
     pub(crate) const OTEL_FIELD_SERVICE_NAME: &'static str = "service.name";
     pub(crate) const OTEL_FIELD_LEVEL: &'static str = "level";

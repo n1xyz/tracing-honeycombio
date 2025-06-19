@@ -391,7 +391,7 @@ mod tests {
         HONEYCOMB_AUTH_HEADER_NAME, HoneycombEventInner, SpanId,
         builder::DEFAULT_CHANNEL_SIZE,
         event_channel,
-        layer::tests::{OTEL_FIELD_LEVEL, OTEL_FIELD_SPAN_ID},
+        layer::tests::{OTEL_FIELD_LEVEL, OTEL_FIELD_SPAN_ID, OTEL_FIELD_TRACE_ID},
     };
     use axum::{
         Json, Router,
@@ -798,6 +798,7 @@ mod tests {
         assert_eq!(log_event.get(OTEL_FIELD_LEVEL), Some(&json!("info")));
         assert_eq!(log_event.get("target"), Some(&json!("test-target")));
         assert_eq!(log_event.get("name"), Some(&json!("test-name")));
+        let trace_id = log_event.get(OTEL_FIELD_TRACE_ID).unwrap();
 
         let span_event = &test_dataset[1];
         assert_eq!(span_event.get("event.field"), None);
@@ -808,8 +809,9 @@ mod tests {
         assert!(span_event.get(OTEL_FIELD_SPAN_ID).is_some());
         assert_eq!(
             log_event.get(OTEL_FIELD_SPAN_ID),
-            span_event.get(OTEL_FIELD_SPAN_ID)
+            Some(span_event.get(OTEL_FIELD_SPAN_ID).unwrap())
         );
+        assert_eq!(span_event.get(OTEL_FIELD_TRACE_ID), Some(trace_id));
     }
 
     #[tokio::test]

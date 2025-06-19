@@ -1,3 +1,4 @@
+use tracing::Level;
 use tracing_subscriber::layer::SubscriberExt;
 
 #[tokio::main]
@@ -13,6 +14,8 @@ async fn main() {
         .with(layer);
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
+    let span = tracing::span!(Level::INFO, "global span");
+    let _enter = span.enter();
     tracing::event!(tracing::Level::INFO, value = 42, "hello world!");
 
     controller.shutdown().await;
