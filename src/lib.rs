@@ -85,6 +85,7 @@ thread_local! {
 ///
 /// The id is valid if it contains at least one non-zero byte.
 #[derive(Clone, PartialEq, Eq, Copy, Hash)]
+#[repr(transparent)]
 pub struct SpanId(NonZeroU64);
 
 impl SpanId {
@@ -130,6 +131,7 @@ impl Serialize for SpanId {
 ///
 /// The id is valid if it contains at least one non-zero byte.
 #[derive(Clone, PartialEq, Eq, Copy, Hash)]
+#[repr(transparent)]
 pub struct TraceId(NonZeroU128);
 
 impl TraceId {

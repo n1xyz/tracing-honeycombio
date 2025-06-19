@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use tracing::Level;
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -14,9 +16,23 @@ async fn main() {
         .with(layer);
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
-    let span = tracing::span!(Level::INFO, "global span");
-    let _enter = span.enter();
-    tracing::event!(tracing::Level::INFO, value = 42, "hello world!");
+    {
+        let span = tracing::span!(Level::INFO, "global span");
+        let _enter = span.enter();
+        tracing::event!(
+            tracing::Level::INFO,
+            meta.annotation_type = "span_event",
+            value = 42,
+            "start"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tracing::event!(
+            tracing::Level::INFO,
+            meta.annotation_type = "span_event",
+            value = 42,
+            "end"
+        );
+    }
 
     controller.shutdown().await;
     let _ = handle.await;
