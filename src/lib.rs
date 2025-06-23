@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use rand::{Rng, SeedableRng, rngs};
 use serde::{Serialize, Serializer};
 use std::{
+    borrow::Cow,
     cell::RefCell,
     collections::HashMap,
     error,
@@ -28,7 +29,7 @@ pub fn event_channel(
 #[derive(Clone, Debug, PartialEq, Default, Serialize)]
 pub struct Fields {
     #[serde(flatten)]
-    pub fields: HashMap<String, serde_json::Value>,
+    pub fields: HashMap<Cow<'static, str>, serde_json::Value>,
 }
 
 // list of reserved field names (case insensitive):
@@ -43,7 +44,7 @@ pub struct Fields {
 // duration_ms
 
 impl Fields {
-    pub fn new(fields: HashMap<String, serde_json::Value>) -> Self {
+    pub fn new(fields: HashMap<Cow<'static, str>, serde_json::Value>) -> Self {
         Self { fields }
     }
 
@@ -197,11 +198,11 @@ pub struct HoneycombEventInner {
 
     #[serde(rename = "service.name")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_name: Option<String>,
+    pub service_name: Option<Cow<'static, str>>,
 
     #[serde(rename = "meta.annotation_type")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub annotation_type: Option<String>,
+    pub annotation_type: Option<Cow<'static, str>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
@@ -211,8 +212,8 @@ pub struct HoneycombEventInner {
     pub busy_ns: Option<u64>,
 
     pub level: &'static str,
-    pub name: String,
-    pub target: String,
+    pub name: Cow<'static, str>,
+    pub target: Cow<'static, str>,
     // TODO: custom value type
     #[serde(flatten)]
     pub fields: Fields,

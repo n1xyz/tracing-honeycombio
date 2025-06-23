@@ -4,7 +4,7 @@ use crate::{
     Url,
     background::{BackgroundTask, BackgroundTaskController},
 };
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 pub const HONEYCOMB_SERVER_US: &'static str = "https://api.honeycomb.io/";
 pub const HONEYCOMB_SERVER_EU: &'static str = "https://api.eu1.honeycomb.io/";
@@ -16,9 +16,9 @@ pub const DEFAULT_CHANNEL_SIZE: usize = 1024;
 /// Builder for constructing a [`Layer`] and its corresponding
 /// [`BackgroundTask`].
 pub struct Builder {
-    pub service_name: Option<String>,
+    pub service_name: Option<Cow<'static, str>>,
     // TODO: custom value type
-    pub extra_fields: HashMap<String, serde_json::Value>,
+    pub extra_fields: HashMap<Cow<'static, str>, serde_json::Value>,
     pub http_headers: reqwest::header::HeaderMap,
     pub event_channel_size: usize,
 }
@@ -61,13 +61,17 @@ impl std::error::Error for InvalidEndpointConfig {}
 impl Builder {
     /// Set the logical name of the service, using the `service.name` field as defined
     /// by OpenTelemetry. Used for distributed tracing.
-    pub fn service_name(mut self, service_name: String) -> Self {
+    pub fn service_name(mut self, service_name: Cow<'static, str>) -> Self {
         self.service_name = Some(service_name);
         self
     }
 
     /// Insert an extra field that is sent with every event.
-    pub fn extra_field(mut self, field_name: String, field_val: serde_json::Value) -> Self {
+    pub fn extra_field(
+        mut self,
+        field_name: Cow<'static, str>,
+        field_val: serde_json::Value,
+    ) -> Self {
         self.extra_fields.insert(field_name, field_val);
         self
     }

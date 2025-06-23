@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use std::{collections::HashMap, time::Instant};
+use std::{borrow::Cow, collections::HashMap, time::Instant};
 use tokio::sync::mpsc;
 use tracing::{Level, Subscriber, span};
 use tracing_subscriber::registry::LookupSpan;
@@ -42,15 +42,15 @@ impl Timings {
 
 pub struct Layer {
     // TODO: custom value type
-    extra_fields: HashMap<String, serde_json::Value>,
-    service_name: Option<String>,
+    extra_fields: HashMap<Cow<'static, str>, serde_json::Value>,
+    service_name: Option<Cow<'static, str>>,
     sender: mpsc::Sender<Option<HoneycombEvent>>,
 }
 
 impl Layer {
     pub fn new(
-        extra_fields: HashMap<String, serde_json::Value>,
-        service_name: Option<String>,
+        extra_fields: HashMap<Cow<'static, str>, serde_json::Value>,
+        service_name: Option<Cow<'static, str>>,
         sender: mpsc::Sender<Option<HoneycombEvent>>,
     ) -> Self {
         Self {
@@ -167,13 +167,13 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
                     .and_then(|s| s.extensions().get::<TraceId>().copied()),
                 parent_span_id: span.and_then(|s| s.extensions().get::<SpanId>().copied()),
                 service_name: self.service_name.clone(),
-                annotation_type: Some("span_event".to_owned()),
+                annotation_type: Some(Cow::Borrowed("span_event")),
                 duration_ms: None,
                 idle_ns: None,
                 busy_ns: None,
                 level: level_as_honeycomb_str(meta.level()),
-                name: meta.name().to_owned(),
-                target: meta.target().to_owned(),
+                name: Cow::Borrowed(meta.name()),
+                target: Cow::Borrowed(meta.target()),
                 fields,
             },
         }));
@@ -239,8 +239,8 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
                 idle_ns,
                 busy_ns,
                 level: level_as_honeycomb_str(meta.level()),
-                name: meta.name().to_owned(),
-                target: meta.target().to_owned(),
+                name: Cow::Borrowed(meta.name()),
+                target: Cow::Borrowed(meta.target()),
                 fields,
             },
         }));
@@ -291,12 +291,12 @@ pub(crate) mod tests {
         let (sender, mut receiver) = event_channel(16384);
         let mut layer = Layer {
             extra_fields: Default::default(),
-            service_name: Some("service_name".to_owned()),
+            service_name: Some("service_name".into()),
             sender,
         };
         layer
             .extra_fields
-            .insert("my_extra_field".to_owned(), json!("extra_field_val"));
+            .insert("my_extra_field".into(), json!("extra_field_val"));
         let subscriber = tracing_subscriber::registry().with(layer);
 
         let (or_val_gp, or_val_p, or_val_c, or_val_e) = (0, 1, 2, 3);
@@ -460,12 +460,12 @@ pub(crate) mod tests {
         let (sender, mut receiver) = event_channel(16384);
         let mut layer = Layer {
             extra_fields: Default::default(),
-            service_name: Some("service_name".to_owned()),
+            service_name: Some("service_name".into()),
             sender,
         };
         layer
             .extra_fields
-            .insert("my_extra_field".to_owned(), json!("extra_field_val"));
+            .insert("my_extra_field".into(), json!("extra_field_val"));
         let subscriber = tracing_subscriber::registry().with(layer);
 
         let parent_id = tracing::subscriber::with_default(subscriber, || {

@@ -1,6 +1,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use serde_json::json;
 use std::{
+    borrow::Cow,
     collections::HashMap,
     hint::black_box,
     pin::Pin,
@@ -111,14 +112,14 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     // note: work neeeded if criterion.rs ever starts using tracing internally
     c.bench_function("send_logs_synthetic", |b| {
         b.iter_custom(|iters| {
-            let mut extra_fields: HashMap<String, serde_json::Value> = HashMap::new();
-            extra_fields.insert("field1".to_string(), json!("value1"));
-            extra_fields.insert("field2".to_string(), json!("longer val".repeat(4)));
+            let mut extra_fields: HashMap<Cow<'static, str>, serde_json::Value> = HashMap::new();
+            extra_fields.insert("field1".into(), json!("value1"));
+            extra_fields.insert("field2".into(), json!("longer val".repeat(4)));
 
             let (sender, receiver) = event_channel(DEFAULT_CHANNEL_SIZE);
             let layer = tracing_honeycombio::layer::Layer::new(
                 black_box(extra_fields),
-                black_box(Some("my-cool-service-name".to_string())),
+                black_box(Some("my-cool-service-name".into())),
                 black_box(sender.clone()),
             );
             let subscriber = tracing_subscriber::registry().with(layer);

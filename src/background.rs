@@ -406,6 +406,7 @@ mod tests {
     use serde::Deserialize;
     use serde_json::json;
     use std::{
+        borrow::Cow,
         collections::{HashMap, hash_map::Entry},
         io::Cursor,
         num::NonZeroU64,
@@ -465,8 +466,8 @@ mod tests {
                 busy_ns: None,
                 idle_ns: None,
                 level: "INFO",
-                name: "name".to_owned(),
-                target: "target".to_owned(),
+                name: Cow::Borrowed("name"),
+                target: Cow::Borrowed("target"),
                 fields: Default::default(),
             },
         }
@@ -757,11 +758,8 @@ mod tests {
         );
         let (api_host, state, serve_task) = run_mock_server().await;
         let (layer, bg_task, bg_task_controller) = crate::builder(MOCK_API_KEY)
-            .extra_field(
-                TEST_EXTRA_FIELD_NAME.to_string(),
-                json!(TEST_EXTRA_FIELD_VALUE),
-            )
-            .service_name("test-service-name".to_string())
+            .extra_field(TEST_EXTRA_FIELD_NAME.into(), json!(TEST_EXTRA_FIELD_VALUE))
+            .service_name("test-service-name".into())
             .http_header(TESTING_HEADER_NAME, TESTING_HEADER_VALUE)
             .unwrap()
             .build(&api_host, TESTING_DATASET)
@@ -839,11 +837,8 @@ mod tests {
 
         let (api_host, state, serve_task) = run_mock_server().await;
         let (honey_layer, bg_task, bg_task_controller) = crate::builder(MOCK_API_KEY)
-            .extra_field(
-                TEST_EXTRA_FIELD_NAME.to_string(),
-                json!(TEST_EXTRA_FIELD_VALUE),
-            )
-            .service_name("test-service-name".to_string())
+            .extra_field(TEST_EXTRA_FIELD_NAME.into(), json!(TEST_EXTRA_FIELD_VALUE))
+            .service_name("test-service-name".into())
             .http_header(TESTING_HEADER_NAME, TESTING_HEADER_VALUE)
             .unwrap()
             .http_header("x-induce-error", "1")
