@@ -246,7 +246,6 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::event_channel;
     use serde_json::{Value, json};
     use tracing::Level;
     use tracing_subscriber::{Registry, layer::SubscriberExt};
@@ -284,7 +283,7 @@ pub(crate) mod tests {
 
     #[test]
     fn tracing_layer() {
-        let (sender, mut receiver) = event_channel(16384);
+        let (sender, mut receiver) = mpsc::channel(16384);
         let mut layer = Layer {
             extra_fields: Default::default(),
             service_name: Some("service_name".into()),
@@ -458,7 +457,7 @@ pub(crate) mod tests {
 
     #[test]
     fn explicit_parent() {
-        let (sender, mut receiver) = event_channel(16384);
+        let (sender, mut receiver) = mpsc::channel(16384);
         let mut layer = Layer {
             extra_fields: Default::default(),
             service_name: Some("service_name".into()),

@@ -8,23 +8,16 @@ use std::{
     error,
     num::{NonZeroU64, NonZeroU128},
 };
-use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 
+pub mod background;
 pub mod builder;
+pub mod layer;
+
 pub use builder::{
     Builder, HONEYCOMB_AUTH_HEADER_NAME, HONEYCOMB_SERVER_EU, HONEYCOMB_SERVER_US, builder,
 };
 pub use reqwest::Url;
-
-pub fn event_channel(
-    size: usize,
-) -> (
-    mpsc::Sender<Option<HoneycombEvent>>,
-    mpsc::Receiver<Option<HoneycombEvent>>,
-) {
-    mpsc::channel(size)
-}
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize)]
 pub struct Fields {
@@ -250,7 +243,3 @@ impl Serialize for HoneycombEvent {
         root.end()
     }
 }
-
-pub mod layer;
-
-pub mod background;

@@ -390,7 +390,6 @@ mod tests {
     use crate::{
         HONEYCOMB_AUTH_HEADER_NAME, SpanId,
         builder::DEFAULT_CHANNEL_SIZE,
-        event_channel,
         layer::tests::{
             OTEL_FIELD_LEVEL, OTEL_FIELD_PARENT_ID, OTEL_FIELD_SPAN_ID, OTEL_FIELD_TRACE_ID,
         },
@@ -494,7 +493,7 @@ mod tests {
         use super::State;
         let waker = dummy_waker();
         let mut cx = Context::from_waker(&waker);
-        let (sender, receiver) = event_channel(DEFAULT_CHANNEL_SIZE);
+        let (sender, receiver) = mpsc::channel(DEFAULT_CHANNEL_SIZE);
         let mut task = BackgroundTaskFut::new_with_backend(RecorderBackend::new(), receiver);
         assert!(matches!(task.1, State::Idle));
 
@@ -546,7 +545,7 @@ mod tests {
         use super::State;
         let waker = dummy_waker();
         let mut cx = Context::from_waker(&waker);
-        let (sender, receiver) = event_channel(DEFAULT_CHANNEL_SIZE);
+        let (sender, receiver) = mpsc::channel(DEFAULT_CHANNEL_SIZE);
         let mut task = BackgroundTaskFut::new_with_backend(RecorderBackend::new(), receiver);
         assert!(matches!(task.1, State::Idle));
 
@@ -561,7 +560,7 @@ mod tests {
         use super::State;
         let waker = dummy_waker();
         let mut cx = Context::from_waker(&waker);
-        let (sender, receiver) = event_channel(DEFAULT_CHANNEL_SIZE);
+        let (sender, receiver) = mpsc::channel(DEFAULT_CHANNEL_SIZE);
         let mut task =
             BackgroundTaskFut::new_with_backend(RecorderBackend::new_induce_failure(), receiver);
         assert!(matches!(task.1, State::Idle));

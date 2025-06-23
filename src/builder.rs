@@ -1,10 +1,10 @@
-use reqwest::header::{self, HeaderMap, HeaderName};
-
 use crate::{
     Url,
     background::{BackgroundTask, BackgroundTaskController},
 };
+use reqwest::header::{self, HeaderMap, HeaderName};
 use std::{borrow::Cow, collections::HashMap};
+use tokio::sync::mpsc;
 
 pub const HONEYCOMB_SERVER_US: &'static str = "https://api.honeycomb.io/";
 pub const HONEYCOMB_SERVER_EU: &'static str = "https://api.eu1.honeycomb.io/";
@@ -138,7 +138,7 @@ impl Builder {
         BackgroundTask,
         BackgroundTaskController,
     ) {
-        let (sender, receiver) = crate::event_channel(self.event_channel_size);
+        let (sender, receiver) = mpsc::channel(self.event_channel_size);
         let layer = crate::layer::Layer::new(self.extra_fields, self.service_name, sender.clone());
         let background_task =
             BackgroundTask::new(honeycomb_endpoint_url, self.http_headers, receiver);

@@ -8,12 +8,12 @@ use std::{
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
     time::Instant,
 };
+use tokio::sync::mpsc;
 use tracing::{Level, instrument::WithSubscriber, subscriber::NoSubscriber};
 use tracing_honeycombio::{
     HoneycombEvent,
     background::{Backend, BackgroundTaskFut},
     builder::DEFAULT_CHANNEL_SIZE,
-    event_channel,
 };
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -116,7 +116,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             extra_fields.insert("field1".into(), json!("value1"));
             extra_fields.insert("field2".into(), json!("longer val".repeat(4)));
 
-            let (sender, receiver) = event_channel(DEFAULT_CHANNEL_SIZE);
+            let (sender, receiver) = mpsc::channel(DEFAULT_CHANNEL_SIZE);
             let layer = tracing_honeycombio::layer::Layer::new(
                 black_box(extra_fields),
                 black_box(Some("my-cool-service-name".into())),
