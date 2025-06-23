@@ -1,6 +1,9 @@
 use chrono::{DateTime, Utc};
 use rand::{Rng, SeedableRng, rngs};
-use serde::{Serialize, Serializer};
+use serde::{
+    Serialize, Serializer,
+    ser::{SerializeMap, SerializeStruct},
+};
 use std::{
     borrow::Cow,
     cell::RefCell,
@@ -174,56 +177,81 @@ impl Serialize for TraceId {
     }
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HoneycombEvent {
-    #[serde(serialize_with = "serialize_datetime_as_rfc3339")]
     pub time: DateTime<Utc>,
-
-    pub data: HoneycombEventInner,
-}
-
-#[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct HoneycombEventInner {
-    #[serde(rename = "trace.span_id")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub span_id: Option<SpanId>,
-
-    #[serde(rename = "trace.trace_id")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<TraceId>,
-
-    #[serde(rename = "trace.parent_id")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_span_id: Option<SpanId>,
-
-    #[serde(rename = "service.name")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub service_name: Option<Cow<'static, str>>,
-
-    #[serde(rename = "meta.annotation_type")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub annotation_type: Option<Cow<'static, str>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_ns: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub busy_ns: Option<u64>,
-
     pub level: &'static str,
     pub name: Cow<'static, str>,
     pub target: Cow<'static, str>,
-    // TODO: custom value type
-    #[serde(flatten)]
     pub fields: Fields,
 }
 
-fn serialize_datetime_as_rfc3339<S>(dt: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    serializer.serialize_str(&dt.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, /* use_z */ true))
+impl Serialize for HoneycombEvent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut root = serializer.serialize_map(None)?;
+        root.serialize_entry(
+            "time",
+            &self
+                .time
+                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, /* use_z */ true),
+        )?;
+
+        struct InnerData<'a>(&'a HoneycombEvent);
+
+        impl<'a> Serialize for InnerData<'a> {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let mut m = serializer.serialize_map(None)?;
+                if let Some(ref span_id) = self.0.span_id {
+                    m.serialize_entry("trace.span_id", span_id)?;
+                }
+                if let Some(ref trace_id) = self.0.trace_id {
+                    m.serialize_entry("trace.trace_id", trace_id)?;
+                }
+                if let Some(ref parent_span_id) = self.0.parent_span_id {
+                    m.serialize_entry("trace.parent_id", parent_span_id)?;
+                }
+                if let Some(ref service_name) = self.0.service_name {
+                    m.serialize_entry("service.name", service_name)?;
+                }
+                if let Some(ref annotation_type) = self.0.annotation_type {
+                    m.serialize_entry("meta.annotation_type", annotation_type)?;
+                }
+                if let Some(ref duration_ms) = self.0.duration_ms {
+                    m.serialize_entry("duration_ms", duration_ms)?;
+                }
+                if let Some(ref idle_ns) = self.0.idle_ns {
+                    m.serialize_entry("duration_ms", idle_ns)?;
+                }
+                if let Some(ref busy_ns) = self.0.busy_ns {
+                    m.serialize_entry("duration_ms", busy_ns)?;
+                }
+                m.serialize_entry("level", self.0.level)?;
+                m.serialize_entry("name", self.0.name.as_ref())?;
+                m.serialize_entry("target", self.0.target.as_ref())?;
+                for (k, v) in self.0.fields.fields.iter() {
+                    m.serialize_entry(k, v)?;
+                }
+                m.end()
+            }
+        }
+
+        root.serialize_entry("data", &InnerData(self))?;
+        root.end()
+    }
 }
 
 pub mod layer;

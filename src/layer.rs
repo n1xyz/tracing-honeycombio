@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tracing::{Level, Subscriber, span};
 use tracing_subscriber::registry::LookupSpan;
 
-use crate::{Fields, HoneycombEvent, HoneycombEventInner, SpanId, TraceId};
+use crate::{Fields, HoneycombEvent, SpanId, TraceId};
 
 fn level_as_honeycomb_str(level: &Level) -> &'static str {
     match *level {
@@ -160,22 +160,20 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         // don't care if channel closed. if capacity is reached, we have larger problems
         let _ = self.sender.try_send(Some(HoneycombEvent {
             time: timestamp,
-            data: HoneycombEventInner {
-                span_id: None,
-                trace_id: span
-                    .as_ref()
-                    .and_then(|s| s.extensions().get::<TraceId>().copied()),
-                parent_span_id: span.and_then(|s| s.extensions().get::<SpanId>().copied()),
-                service_name: self.service_name.clone(),
-                annotation_type: Some(Cow::Borrowed("span_event")),
-                duration_ms: None,
-                idle_ns: None,
-                busy_ns: None,
-                level: level_as_honeycomb_str(meta.level()),
-                name: Cow::Borrowed(meta.name()),
-                target: Cow::Borrowed(meta.target()),
-                fields,
-            },
+            span_id: None,
+            trace_id: span
+                .as_ref()
+                .and_then(|s| s.extensions().get::<TraceId>().copied()),
+            parent_span_id: span.and_then(|s| s.extensions().get::<SpanId>().copied()),
+            service_name: self.service_name.clone(),
+            annotation_type: Some(Cow::Borrowed("span_event")),
+            duration_ms: None,
+            idle_ns: None,
+            busy_ns: None,
+            level: level_as_honeycomb_str(meta.level()),
+            name: Cow::Borrowed(meta.name()),
+            target: Cow::Borrowed(meta.target()),
+            fields,
         }));
     }
 
@@ -227,22 +225,20 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
 
         let _ = self.sender.try_send(Some(HoneycombEvent {
             time: timestamp,
-            data: HoneycombEventInner {
-                span_id: span.extensions_mut().remove::<SpanId>(),
-                trace_id,
-                parent_span_id: span
-                    .parent()
-                    .and_then(|p| p.extensions().get::<SpanId>().copied()),
-                service_name: self.service_name.clone(),
-                annotation_type: None,
-                duration_ms,
-                idle_ns,
-                busy_ns,
-                level: level_as_honeycomb_str(meta.level()),
-                name: Cow::Borrowed(meta.name()),
-                target: Cow::Borrowed(meta.target()),
-                fields,
-            },
+            span_id: span.extensions_mut().remove::<SpanId>(),
+            trace_id,
+            parent_span_id: span
+                .parent()
+                .and_then(|p| p.extensions().get::<SpanId>().copied()),
+            service_name: self.service_name.clone(),
+            annotation_type: None,
+            duration_ms,
+            idle_ns,
+            busy_ns,
+            level: level_as_honeycomb_str(meta.level()),
+            name: Cow::Borrowed(meta.name()),
+            target: Cow::Borrowed(meta.target()),
+            fields,
         }));
     }
 }
@@ -358,29 +354,26 @@ pub(crate) mod tests {
         );
         let events = events.into_iter().map(|i| i.unwrap()).collect::<Vec<_>>();
         assert_eq!(
-            events
-                .iter()
-                .map(|evt| evt.data.trace_id)
-                .collect::<Vec<_>>(),
-            std::iter::repeat_n(Some(events[0].data.trace_id.unwrap()), events.len())
+            events.iter().map(|evt| evt.trace_id).collect::<Vec<_>>(),
+            std::iter::repeat_n(Some(events[0].trace_id.unwrap()), events.len())
                 .collect::<Vec<_>>()
         );
         assert_eq!(
             events
                 .iter()
-                .map(|evt| (evt.data.parent_span_id, evt.data.span_id.unwrap()))
+                .map(|evt| (evt.parent_span_id, evt.span_id))
                 .collect::<Vec<_>>(),
             vec![
-                (None, child_id),                  // the event
-                (Some(parent_id), child_id),       // child_span closing
-                (Some(grandparent_id), parent_id), // parent_span closing
-                (None, grandparent_id)             // grandparent_span closing
+                (Some(child_id), None),                  // the event
+                (Some(parent_id), Some(child_id)),       // child_span closing
+                (Some(grandparent_id), Some(parent_id)), // parent_span closing
+                (None, Some(grandparent_id))             // grandparent_span closing
             ]
         );
         assert_eq!(
             events
                 .iter()
-                .map(|evt| (evt.data.fields.fields.get("overridden_field")))
+                .map(|evt| (evt.fields.fields.get("overridden_field")))
                 .collect::<Vec<_>>(),
             vec![
                 (Some(&json!(or_val_e))),  // the event
@@ -391,17 +384,21 @@ pub(crate) mod tests {
         );
 
         let log_event = &events[0];
-        let ev_map = match serde_json::to_value(&log_event.data).unwrap() {
-            Value::Object(obj) => obj,
+        let root = match serde_json::to_value(&log_event).unwrap() {
+            Value::Object(root) => root,
             val => panic!(
                 "expected event to serialize into map, instead got {:#?}",
                 val
             ),
         };
+        let ev_map = match root.get("data").unwrap() {
+            Value::Object(data) => data,
+            _ => panic!("data key has unexpected type"),
+        };
         check_ev_map_depth_one(&ev_map);
 
-        assert_eq!(ev_map.get(OTEL_FIELD_SPAN_ID), Some(&json!(child_id)));
-        assert_eq!(ev_map.get(OTEL_FIELD_PARENT_ID), None);
+        assert_eq!(ev_map.get(OTEL_FIELD_SPAN_ID), None);
+        assert_eq!(ev_map.get(OTEL_FIELD_PARENT_ID), Some(&json!(child_id)));
         assert_eq!(
             ev_map.get(OTEL_FIELD_SERVICE_NAME),
             Some(&json!("service_name"))
@@ -429,17 +426,21 @@ pub(crate) mod tests {
 
         let child_closing_event = events.get(1).unwrap();
         assert_eq!(
-            child_closing_event.data.fields.fields.get("child_field"),
+            child_closing_event.fields.fields.get("child_field"),
             Some(&json!(42))
         );
 
         let parent_closing_event = &events[2];
-        let ev_map = match serde_json::to_value(&parent_closing_event.data).unwrap() {
-            Value::Object(obj) => obj,
+        let root = match serde_json::to_value(&parent_closing_event).unwrap() {
+            Value::Object(root) => root,
             val => panic!(
                 "expected event to serialize into map, instead got {:#?}",
                 val
             ),
+        };
+        let ev_map = match root.get("data").unwrap() {
+            Value::Object(data) => data,
+            _ => panic!("data key has unexpected type"),
         };
         check_ev_map_depth_one(&ev_map);
 
@@ -483,11 +484,8 @@ pub(crate) mod tests {
         let mut events = Vec::with_capacity(1);
         assert_eq!(receiver.blocking_recv_many(&mut events, 128), 3);
         let event = events[0].take().unwrap();
-        assert_eq!(
-            event.data.fields.fields.get("message"),
-            Some(&json!("message"))
-        );
-        assert_eq!(event.data.parent_span_id, None);
-        assert_eq!(event.data.span_id, Some(parent_id));
+        assert_eq!(event.fields.fields.get("message"), Some(&json!("message")));
+        assert_eq!(event.span_id, None);
+        assert_eq!(event.parent_span_id, Some(parent_id));
     }
 }

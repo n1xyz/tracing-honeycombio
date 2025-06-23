@@ -388,10 +388,12 @@ impl BackgroundTaskController {
 mod tests {
     use super::*;
     use crate::{
-        HONEYCOMB_AUTH_HEADER_NAME, HoneycombEventInner, SpanId,
+        HONEYCOMB_AUTH_HEADER_NAME, SpanId,
         builder::DEFAULT_CHANNEL_SIZE,
         event_channel,
-        layer::tests::{OTEL_FIELD_LEVEL, OTEL_FIELD_SPAN_ID, OTEL_FIELD_TRACE_ID},
+        layer::tests::{
+            OTEL_FIELD_LEVEL, OTEL_FIELD_PARENT_ID, OTEL_FIELD_SPAN_ID, OTEL_FIELD_TRACE_ID,
+        },
     };
     use axum::{
         Json, Router,
@@ -456,20 +458,18 @@ mod tests {
     fn new_event(span_id: Option<u64>) -> HoneycombEvent {
         HoneycombEvent {
             time: Utc::now(),
-            data: HoneycombEventInner {
-                span_id: span_id.map(|i| SpanId::from(NonZeroU64::new(i).unwrap())),
-                trace_id: None,
-                parent_span_id: None,
-                service_name: None,
-                annotation_type: None,
-                duration_ms: None,
-                busy_ns: None,
-                idle_ns: None,
-                level: "INFO",
-                name: Cow::Borrowed("name"),
-                target: Cow::Borrowed("target"),
-                fields: Default::default(),
-            },
+            span_id: span_id.map(|i| SpanId::from(NonZeroU64::new(i).unwrap())),
+            trace_id: None,
+            parent_span_id: None,
+            service_name: None,
+            annotation_type: None,
+            duration_ms: None,
+            busy_ns: None,
+            idle_ns: None,
+            level: "INFO",
+            name: Cow::Borrowed("name"),
+            target: Cow::Borrowed("target"),
+            fields: Default::default(),
         }
     }
 
@@ -511,10 +511,8 @@ mod tests {
         sender
             .blocking_send(Some(HoneycombEvent {
                 time: evt.time,
-                data: HoneycombEventInner {
-                    span_id: Some(SpanId::from(NonZeroU64::new(1).unwrap())),
-                    ..evt.data.clone()
-                },
+                span_id: Some(SpanId::from(NonZeroU64::new(1).unwrap())),
+                ..evt.clone()
             }))
             .unwrap();
 
@@ -529,7 +527,7 @@ mod tests {
         assert!(matches!(task.1, State::Inflight(_)));
         assert_eq!(task.0.backend.events.len(), 3);
         assert_eq!(
-            task.0.backend.events[2].data.span_id,
+            task.0.backend.events[2].span_id,
             Some(SpanId::from(NonZeroU64::new(1).unwrap()))
         );
 
@@ -807,7 +805,7 @@ mod tests {
         assert_eq!(span_event.get("name"), Some(&json!("span name")));
         assert!(span_event.get(OTEL_FIELD_SPAN_ID).is_some());
         assert_eq!(
-            log_event.get(OTEL_FIELD_SPAN_ID),
+            log_event.get(OTEL_FIELD_PARENT_ID),
             Some(span_event.get(OTEL_FIELD_SPAN_ID).unwrap())
         );
         assert_eq!(span_event.get(OTEL_FIELD_TRACE_ID), Some(trace_id));
