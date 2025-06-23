@@ -1,9 +1,6 @@
 use chrono::{DateTime, Utc};
 use rand::{Rng, SeedableRng, rngs};
-use serde::{
-    Serialize, Serializer,
-    ser::{SerializeMap, SerializeStruct},
-};
+use serde::{Serialize, Serializer, ser::SerializeMap};
 use std::{
     borrow::Cow,
     cell::RefCell,
