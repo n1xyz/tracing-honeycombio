@@ -1,5 +1,5 @@
 use quanta::Instant;
-use std::{borrow::Cow, collections::HashMap};
+use std::borrow::Cow;
 use time::UtcDateTime;
 use tokio::sync::mpsc;
 use tracing::{Level, Subscriber, span};
@@ -42,20 +42,16 @@ impl Timings {
 }
 
 pub struct Layer {
-    // TODO: custom value type
-    extra_fields: HashMap<Cow<'static, str>, serde_json::Value>,
     service_name: Option<Cow<'static, str>>,
     sender: mpsc::Sender<Option<HoneycombEvent>>,
 }
 
 impl Layer {
     pub fn new(
-        extra_fields: HashMap<Cow<'static, str>, serde_json::Value>,
         service_name: Option<Cow<'static, str>>,
         sender: mpsc::Sender<Option<HoneycombEvent>>,
     ) -> Self {
         Self {
-            extra_fields,
             service_name,
             sender,
         }
@@ -144,7 +140,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         let timestamp = UtcDateTime::now();
         // removed: tracing-log support by calling .normalized_metadata()
         let meta = event.metadata();
-        let mut fields = Fields::new(self.extra_fields.clone());
+        let mut fields = Fields::new();
         if let Some(ref associated_span) = span {
             for span in associated_span.scope().from_root() {
                 fields.fields.extend(
@@ -183,7 +179,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         let span = ctx
             .span(&id)
             .expect("span passed to on_new_span is open, valid, and stored by subscriber");
-        let mut fields = Fields::new(self.extra_fields.clone());
+        let mut fields = Fields::new();
 
         let mut duration_ms = None;
         let mut idle_ns = None;
@@ -286,14 +282,10 @@ pub(crate) mod tests {
     #[test]
     fn tracing_layer() {
         let (sender, mut receiver) = mpsc::channel(16384);
-        let mut layer = Layer {
-            extra_fields: Default::default(),
+        let layer = Layer {
             service_name: Some("service_name".into()),
             sender,
         };
-        layer
-            .extra_fields
-            .insert("my_extra_field".into(), json!("extra_field_val"));
         let subscriber = tracing_subscriber::registry().with(layer);
 
         let (or_val_gp, or_val_p, or_val_c, or_val_e) = (0, 1, 2, 3);
@@ -460,14 +452,10 @@ pub(crate) mod tests {
     #[test]
     fn explicit_parent() {
         let (sender, mut receiver) = mpsc::channel(16384);
-        let mut layer = Layer {
-            extra_fields: Default::default(),
+        let layer = Layer {
             service_name: Some("service_name".into()),
             sender,
         };
-        layer
-            .extra_fields
-            .insert("my_extra_field".into(), json!("extra_field_val"));
         let subscriber = tracing_subscriber::registry().with(layer);
 
         let parent_id = tracing::subscriber::with_default(subscriber, || {

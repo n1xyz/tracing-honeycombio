@@ -1,5 +1,8 @@
 use rand::{Rng, SeedableRng, rngs};
-use serde::{Serialize, Serializer, ser::SerializeMap};
+use serde::{
+    Serialize, Serializer,
+    ser::{SerializeMap, SerializeSeq},
+};
 use std::{
     borrow::Cow,
     cell::RefCell,
@@ -37,12 +40,20 @@ pub struct Fields {
 // duration_ms
 
 impl Fields {
-    pub fn new(fields: HashMap<Cow<'static, str>, serde_json::Value>) -> Self {
-        Self { fields }
+    pub fn new() -> Self {
+        Self {
+            fields: HashMap::new(),
+        }
     }
 
     pub fn record<T: Into<serde_json::Value>>(&mut self, field: &Field, value: T) {
         self.fields.insert(field.name().into(), value.into());
+    }
+}
+
+impl From<HashMap<Cow<'static, str>, serde_json::Value>> for Fields {
+    fn from(value: HashMap<Cow<'static, str>, serde_json::Value>) -> Self {
+        Self { fields: value }
     }
 }
 
@@ -184,6 +195,45 @@ pub struct HoneycombEvent {
     pub fields: Fields,
 }
 
+impl HoneycombEvent {
+    fn serialize_data_fields<M: SerializeMap>(
+        &self,
+        m: &mut M,
+    ) -> Result<(), <M as SerializeMap>::Error> {
+        if let Some(ref span_id) = self.span_id {
+            m.serialize_entry("trace.span_id", span_id)?;
+        }
+        if let Some(ref trace_id) = self.trace_id {
+            m.serialize_entry("trace.trace_id", trace_id)?;
+        }
+        if let Some(ref parent_span_id) = self.parent_span_id {
+            m.serialize_entry("trace.parent_id", parent_span_id)?;
+        }
+        if let Some(ref service_name) = self.service_name {
+            m.serialize_entry("service.name", service_name)?;
+        }
+        if let Some(ref annotation_type) = self.annotation_type {
+            m.serialize_entry("meta.annotation_type", annotation_type)?;
+        }
+        if let Some(ref duration_ms) = self.duration_ms {
+            m.serialize_entry("duration_ms", duration_ms)?;
+        }
+        if let Some(ref idle_ns) = self.idle_ns {
+            m.serialize_entry("duration_ms", idle_ns)?;
+        }
+        if let Some(ref busy_ns) = self.busy_ns {
+            m.serialize_entry("duration_ms", busy_ns)?;
+        }
+        m.serialize_entry("level", self.level)?;
+        m.serialize_entry("name", self.name.as_ref())?;
+        m.serialize_entry("target", self.target.as_ref())?;
+        for (k, v) in self.fields.fields.iter() {
+            m.serialize_entry(k, v)?;
+        }
+        Ok(())
+    }
+}
+
 impl Serialize for HoneycombEvent {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -206,41 +256,78 @@ impl Serialize for HoneycombEvent {
                 S: Serializer,
             {
                 let mut m = serializer.serialize_map(None)?;
-                if let Some(ref span_id) = self.0.span_id {
-                    m.serialize_entry("trace.span_id", span_id)?;
-                }
-                if let Some(ref trace_id) = self.0.trace_id {
-                    m.serialize_entry("trace.trace_id", trace_id)?;
-                }
-                if let Some(ref parent_span_id) = self.0.parent_span_id {
-                    m.serialize_entry("trace.parent_id", parent_span_id)?;
-                }
-                if let Some(ref service_name) = self.0.service_name {
-                    m.serialize_entry("service.name", service_name)?;
-                }
-                if let Some(ref annotation_type) = self.0.annotation_type {
-                    m.serialize_entry("meta.annotation_type", annotation_type)?;
-                }
-                if let Some(ref duration_ms) = self.0.duration_ms {
-                    m.serialize_entry("duration_ms", duration_ms)?;
-                }
-                if let Some(ref idle_ns) = self.0.idle_ns {
-                    m.serialize_entry("duration_ms", idle_ns)?;
-                }
-                if let Some(ref busy_ns) = self.0.busy_ns {
-                    m.serialize_entry("duration_ms", busy_ns)?;
-                }
-                m.serialize_entry("level", self.0.level)?;
-                m.serialize_entry("name", self.0.name.as_ref())?;
-                m.serialize_entry("target", self.0.target.as_ref())?;
-                for (k, v) in self.0.fields.fields.iter() {
-                    m.serialize_entry(k, v)?;
-                }
+                self.0.serialize_data_fields(&mut m)?;
                 m.end()
             }
         }
 
         root.serialize_entry("data", &InnerData(self))?;
+        root.end()
+    }
+}
+
+// TODO: custom value type
+pub type ExtraFields = Vec<(Cow<'static, str>, serde_json::Value)>;
+
+pub struct CreateEventsPayload<'a> {
+    events: &'a Vec<HoneycombEvent>,
+    extra_fields: &'a ExtraFields,
+}
+
+impl<'a> Serialize for CreateEventsPayload<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut events_list = serializer.serialize_seq(None)?;
+        for event in self.events.iter() {
+            events_list.serialize_element(&CreateEventPayload {
+                event,
+                extra_fields: self.extra_fields,
+            })?;
+        }
+        events_list.end()
+    }
+}
+
+struct CreateEventPayload<'a> {
+    event: &'a HoneycombEvent,
+    extra_fields: &'a ExtraFields,
+}
+
+impl<'a> Serialize for CreateEventPayload<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut root = serializer.serialize_map(None)?;
+        root.serialize_entry(
+            "time",
+            &self
+                .event
+                .time
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(serde::ser::Error::custom)?,
+        )?;
+        struct InnerData<'a>(&'a HoneycombEvent, &'a ExtraFields);
+
+        impl<'a> Serialize for InnerData<'a> {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let mut m = serializer.serialize_map(None)?;
+                // in most JSON parsers, second key wins and earlier occurrence gets overwritten
+                // we want event fields to take precedence over extra_fields so serialize extra_fields first
+                for (k, v) in self.1.iter() {
+                    m.serialize_entry(k, v)?;
+                }
+                self.0.serialize_data_fields(&mut m)?;
+                m.end()
+            }
+        }
+
+        root.serialize_entry("data", &InnerData(self.event, self.extra_fields))?;
         root.end()
     }
 }

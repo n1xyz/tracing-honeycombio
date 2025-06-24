@@ -2,7 +2,6 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use serde_json::json;
 use std::{
     borrow::Cow,
-    collections::HashMap,
     hint::black_box,
     pin::Pin,
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
@@ -11,7 +10,7 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::{Level, instrument::WithSubscriber, subscriber::NoSubscriber};
 use tracing_honeycombio::{
-    HoneycombEvent,
+    CreateEventsPayload,
     background::{Backend, BackgroundTaskFut},
     builder::DEFAULT_CHANNEL_SIZE,
 };
@@ -34,10 +33,10 @@ impl Backend for NoHttpBackend {
     type Err = Box<dyn std::error::Error>;
     type Fut = Pin<Box<dyn Future<Output = Result<(), Self::Err>> + Send + 'static>>;
 
-    fn submit_events(&mut self, events: &Vec<HoneycombEvent>) -> Self::Fut {
+    fn submit_events<'a>(&mut self, payload: CreateEventsPayload<'a>) -> Self::Fut {
         let mut body = Vec::with_capacity(128);
         let mut encoder = zstd::Encoder::with_context(&mut body, &mut self.compression_context);
-        let () = serde_json::to_writer(&mut encoder, events)
+        let () = serde_json::to_writer(&mut encoder, &payload)
                     .expect("none of the tracing field types can fail to serialize and zstd compression should succeed");
         encoder.finish().expect("zstd compression should succeed");
 
@@ -112,18 +111,18 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     // note: work neeeded if criterion.rs ever starts using tracing internally
     c.bench_function("send_logs_synthetic", |b| {
         b.iter_custom(|iters| {
-            let mut extra_fields: HashMap<Cow<'static, str>, serde_json::Value> = HashMap::new();
-            extra_fields.insert("field1".into(), json!("value1"));
-            extra_fields.insert("field2".into(), json!("longer val".repeat(4)));
+            let mut extra_fields: Vec<(Cow<'static, str>, serde_json::Value)> = Vec::new();
+            extra_fields.push(("field1".into(), json!("value1")));
+            extra_fields.push(("field2".into(), json!("longer val".repeat(4))));
 
             let (sender, receiver) = mpsc::channel(DEFAULT_CHANNEL_SIZE);
             let layer = tracing_honeycombio::layer::Layer::new(
-                black_box(extra_fields),
                 black_box(Some("my-cool-service-name".into())),
                 black_box(sender.clone()),
             );
             let subscriber = tracing_subscriber::registry().with(layer);
             let mut background_task = BackgroundTaskFut::new_with_backend(
+                black_box(extra_fields),
                 black_box(NoHttpBackend::new()),
                 black_box(receiver),
             );

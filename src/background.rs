@@ -1,4 +1,4 @@
-use crate::Url;
+use crate::{CreateEventsPayload, ExtraFields, Url};
 use std::{
     fmt::{self, Debug},
     pin::Pin,
@@ -44,7 +44,7 @@ pub trait Backend {
     type Err: std::fmt::Display;
     type Fut: Future<Output = Result<(), Self::Err>>;
 
-    fn submit_events(&mut self, events: &Vec<HoneycombEvent>) -> Self::Fut;
+    fn submit_events<'a>(&mut self, payload: CreateEventsPayload<'a>) -> Self::Fut;
 }
 
 pub struct ClientBackend {
@@ -84,10 +84,10 @@ impl Backend for ClientBackend {
     type Err = Box<dyn std::error::Error>;
     type Fut = Pin<Box<dyn Future<Output = Result<(), Self::Err>> + Send + 'static>>;
 
-    fn submit_events(&mut self, events: &Vec<HoneycombEvent>) -> Self::Fut {
+    fn submit_events<'a>(&mut self, payload: CreateEventsPayload<'a>) -> Self::Fut {
         let mut body = Vec::with_capacity(128);
         let mut encoder = zstd::Encoder::with_context(&mut body, &mut self.compression_context);
-        let () = serde_json::to_writer(&mut encoder, events)
+        let () = serde_json::to_writer(&mut encoder, &payload)
                     .expect("none of the tracing field types can fail to serialize and zstd compression should succeed");
         encoder.finish().expect("zstd compression should succeed");
 
@@ -117,6 +117,7 @@ impl Backend for ClientBackend {
 
 struct BackgroundTaskInner<B> {
     receiver: mpsc::Receiver<Option<HoneycombEvent>>,
+    extra_fields: ExtraFields,
     backend: B,
     backoff_count: u32,
     quitting: bool,
@@ -211,11 +212,15 @@ where
 
     fn transition_inflight(mut self: Pin<&mut Self>) -> State<<B as Backend>::Fut> {
         let Self {
+            extra_fields,
             backend,
             inflight_reqs,
             ..
         } = &mut *self;
-        let fut = backend.submit_events(&inflight_reqs);
+        let fut = backend.submit_events(CreateEventsPayload {
+            events: &inflight_reqs,
+            extra_fields: &extra_fields,
+        });
         State::Inflight(InflightState { send_task: fut })
     }
 
@@ -317,9 +322,11 @@ impl BackgroundTaskFut<ClientBackend> {
     pub fn new(
         honeycomb_endpoint_url: Url,
         http_headers: reqwest::header::HeaderMap,
+        extra_fields: ExtraFields,
         receiver: mpsc::Receiver<Option<HoneycombEvent>>,
     ) -> Self {
         Self::new_with_backend(
+            extra_fields,
             ClientBackend::new(honeycomb_endpoint_url, http_headers),
             receiver,
         )
@@ -327,10 +334,15 @@ impl BackgroundTaskFut<ClientBackend> {
 }
 
 impl<B: Backend> BackgroundTaskFut<B> {
-    pub fn new_with_backend(backend: B, receiver: mpsc::Receiver<Option<HoneycombEvent>>) -> Self {
+    pub fn new_with_backend(
+        extra_fields: ExtraFields,
+        backend: B,
+        receiver: mpsc::Receiver<Option<HoneycombEvent>>,
+    ) -> Self {
         Self(
             BackgroundTaskInner {
                 receiver,
+                extra_fields,
                 backend,
                 backoff_count: 0,
                 quitting: false,
@@ -394,7 +406,7 @@ impl BackgroundTaskController {
 mod tests {
     use super::*;
     use crate::{
-        HONEYCOMB_AUTH_HEADER_NAME, SpanId,
+        CreateEventsPayload, HONEYCOMB_AUTH_HEADER_NAME, SpanId,
         builder::DEFAULT_CHANNEL_SIZE,
         layer::tests::{
             OTEL_FIELD_LEVEL, OTEL_FIELD_PARENT_ID, OTEL_FIELD_SPAN_ID, OTEL_FIELD_TRACE_ID,
@@ -449,11 +461,11 @@ mod tests {
         type Err = Box<dyn std::error::Error>;
         type Fut = Pin<Box<dyn Future<Output = Result<(), Self::Err>>>>;
 
-        fn submit_events(&mut self, events: &Vec<HoneycombEvent>) -> Self::Fut {
+        fn submit_events<'a>(&mut self, payload: CreateEventsPayload<'a>) -> Self::Fut {
             let ret = if self.induce_failure {
                 Err(Box::<dyn std::error::Error>::from("test error"))
             } else {
-                self.events.append(&mut events.clone());
+                self.events.append(&mut payload.events.clone());
                 Ok(())
             };
             Box::pin(async move { ret })
@@ -500,7 +512,11 @@ mod tests {
         let waker = dummy_waker();
         let mut cx = Context::from_waker(&waker);
         let (sender, receiver) = mpsc::channel(DEFAULT_CHANNEL_SIZE);
-        let mut task = BackgroundTaskFut::new_with_backend(RecorderBackend::new(), receiver);
+        let mut task = BackgroundTaskFut::new_with_backend(
+            ExtraFields::new(),
+            RecorderBackend::new(),
+            receiver,
+        );
         assert!(matches!(task.1, State::Idle));
 
         let evt = new_event(Some(1234));
@@ -552,7 +568,11 @@ mod tests {
         let waker = dummy_waker();
         let mut cx = Context::from_waker(&waker);
         let (sender, receiver) = mpsc::channel(DEFAULT_CHANNEL_SIZE);
-        let mut task = BackgroundTaskFut::new_with_backend(RecorderBackend::new(), receiver);
+        let mut task = BackgroundTaskFut::new_with_backend(
+            ExtraFields::new(),
+            RecorderBackend::new(),
+            receiver,
+        );
         assert!(matches!(task.1, State::Idle));
 
         drop(sender);
@@ -567,8 +587,11 @@ mod tests {
         let waker = dummy_waker();
         let mut cx = Context::from_waker(&waker);
         let (sender, receiver) = mpsc::channel(DEFAULT_CHANNEL_SIZE);
-        let mut task =
-            BackgroundTaskFut::new_with_backend(RecorderBackend::new_induce_failure(), receiver);
+        let mut task = BackgroundTaskFut::new_with_backend(
+            ExtraFields::new(),
+            RecorderBackend::new_induce_failure(),
+            receiver,
+        );
         assert!(matches!(task.1, State::Idle));
 
         let evt = new_event(Some(1234));
