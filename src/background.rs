@@ -120,6 +120,8 @@ struct BackgroundTaskInner<B> {
     backend: B,
     backoff_count: u32,
     quitting: bool,
+    // we can't recv into inflight_reqs because the buffer must hold `Option`s
+    recv_buf: Vec<Option<HoneycombEvent>>,
     inflight_reqs: Vec<HoneycombEvent>,
 }
 
@@ -166,9 +168,9 @@ where
             return (Poll::Ready(()), None);
         }
 
-        // separate vec because self.inflight_reqs doesn't hold Options
-        let mut msgs: Vec<Option<HoneycombEvent>> = Vec::new();
-        match Pin::new(&mut self.receiver).poll_recv_many(cx, &mut msgs, 1024) {
+        // can't mutably borrow this and another field at the same time, so move out
+        let mut recvd = std::mem::take(&mut self.recv_buf);
+        match Pin::new(&mut self.receiver).poll_recv_many(cx, &mut recvd, 1024) {
             Poll::Pending => return (Poll::Pending, None),
             Poll::Ready(0) => {
                 // channel closed (since recv limit is nonzero)
@@ -178,17 +180,20 @@ where
             Poll::Ready(1..) => {}
         }
 
-        let mut msgs_iter = msgs.into_iter();
-        while let Some(msg) = msgs_iter.next() {
-            match msg {
-                Some(event) => self.inflight_reqs.push(event),
-                None => {
-                    // explicit close
-                    self.quitting = true;
-                    break; // drop following events
+        {
+            let mut msgs_iter = recvd.drain(..);
+            while let Some(msg) = msgs_iter.next() {
+                match msg {
+                    Some(event) => self.inflight_reqs.push(event),
+                    None => {
+                        // explicit close
+                        self.quitting = true;
+                        break; // drop following events
+                    }
                 }
             }
         }
+        self.recv_buf = recvd;
 
         if !self.inflight_reqs.is_empty() {
             let new_state = self.transition_inflight();
@@ -329,6 +334,7 @@ impl<B: Backend> BackgroundTaskFut<B> {
                 backend,
                 backoff_count: 0,
                 quitting: false,
+                recv_buf: Vec::new(),
                 inflight_reqs: Vec::new(),
             },
             State::initial(),
