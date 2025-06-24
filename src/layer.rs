@@ -1,4 +1,5 @@
-use std::{borrow::Cow, collections::HashMap, time::Instant};
+use quanta::Instant;
+use std::{borrow::Cow, collections::HashMap};
 use time::UtcDateTime;
 use tokio::sync::mpsc;
 use tracing::{Level, Subscriber, span};
