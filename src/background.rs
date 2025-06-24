@@ -786,7 +786,10 @@ mod tests {
         );
         let (api_host, state, serve_task) = run_mock_server().await;
         let (layer, bg_task, bg_task_controller) = crate::builder(MOCK_API_KEY)
-            .extra_field(TEST_EXTRA_FIELD_NAME.into(), json!(TEST_EXTRA_FIELD_VALUE))
+            .extra_field(
+                TEST_EXTRA_FIELD_NAME.into(),
+                Cow::Borrowed(TEST_EXTRA_FIELD_VALUE).into(),
+            )
             .service_name("test-service-name".into())
             .http_header(TESTING_HEADER_NAME, TESTING_HEADER_VALUE)
             .unwrap()
@@ -865,7 +868,10 @@ mod tests {
 
         let (api_host, state, serve_task) = run_mock_server().await;
         let (honey_layer, bg_task, bg_task_controller) = crate::builder(MOCK_API_KEY)
-            .extra_field(TEST_EXTRA_FIELD_NAME.into(), json!(TEST_EXTRA_FIELD_VALUE))
+            .extra_field(
+                TEST_EXTRA_FIELD_NAME.into(),
+                Cow::Borrowed(TEST_EXTRA_FIELD_VALUE).into(),
+            )
             .service_name("test-service-name".into())
             .http_header(TESTING_HEADER_NAME, TESTING_HEADER_VALUE)
             .unwrap()

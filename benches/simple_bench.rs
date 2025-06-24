@@ -1,5 +1,4 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use serde_json::json;
 use std::{
     borrow::Cow,
     hint::black_box,
@@ -10,7 +9,7 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::{Level, instrument::WithSubscriber, subscriber::NoSubscriber};
 use tracing_honeycombio::{
-    CreateEventsPayload,
+    CreateEventsPayload, Value,
     background::{Backend, BackgroundTaskFut},
     builder::DEFAULT_CHANNEL_SIZE,
 };
@@ -111,9 +110,9 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     // note: work neeeded if criterion.rs ever starts using tracing internally
     c.bench_function("send_logs_synthetic", |b| {
         b.iter_custom(|iters| {
-            let mut extra_fields: Vec<(Cow<'static, str>, serde_json::Value)> = Vec::new();
-            extra_fields.push(("field1".into(), json!("value1")));
-            extra_fields.push(("field2".into(), json!("longer val".repeat(4))));
+            let mut extra_fields: Vec<(Cow<'static, str>, Value)> = Vec::new();
+            extra_fields.push(("field1".into(), Cow::Borrowed("value1").into()));
+            extra_fields.push(("field2".into(), "longer val".repeat(4).into()));
 
             let (sender, receiver) = mpsc::channel(DEFAULT_CHANNEL_SIZE);
             let layer = tracing_honeycombio::layer::Layer::new(

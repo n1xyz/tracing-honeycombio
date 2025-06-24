@@ -22,10 +22,113 @@ pub use builder::{
 };
 pub use reqwest::Url;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Value {
+    // fields whose value is `null` seem to be ignored by Honeycomb, so no Null variant
+    // arrays and objects are not supported
+    Bool(bool),
+    Number(serde_json::Number),
+    String(Cow<'static, str>),
+}
+
+impl From<bool> for Value {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+
+macro_rules! from_integer {
+    ($($ty:ident)*) => {
+        $(
+            impl From<$ty> for Value {
+                fn from(n: $ty) -> Self {
+                    Value::Number(n.into())
+                }
+            }
+        )*
+    };
+}
+
+from_integer! {
+    i8 i16 i32 i64 isize
+    u8 u16 u32 u64 usize
+}
+
+impl From<f32> for Value {
+    /// Convert 32-bit floating point number to `Value::Number`, or
+    /// `Value::String` if infinite or NaN.
+    fn from(f: f32) -> Self {
+        // serde_json making Number::from_f32 private has forced my hand
+        f64::from(f).into()
+    }
+}
+
+impl From<f64> for Value {
+    /// Convert 64-bit floating point number to `Value::Number`, or
+    /// `Value::String` if infinite or NaN.
+    fn from(f: f64) -> Self {
+        serde_json::Number::from_f64(f)
+            .map(Self::Number)
+            // this is a little slimy but good behavior for honeycomb specifically
+            // there's not really much else since we don't have a Null variant
+            .unwrap_or_else(|| Self::String(format!("{}", f).into()))
+    }
+}
+
+impl From<String> for Value {
+    fn from(f: String) -> Self {
+        Value::String(Cow::Owned(f))
+    }
+}
+
+impl From<&str> for Value {
+    fn from(f: &str) -> Self {
+        Value::String(Cow::Owned(f.to_owned()))
+    }
+}
+
+// we sacrifice generality here to prevent the footgun of
+//  Cow<'static, str>::Borrowed(&'static str)::into() silently
+//  converting into Cow::Owned
+impl<'a> From<Cow<'static, str>> for Value {
+    fn from(f: Cow<'static, str>) -> Self {
+        Value::String(f)
+    }
+}
+
+impl From<serde_json::Number> for Value {
+    /// Convert `Number` to `Value::Number`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use serde_json::{Number, Value};
+    ///
+    /// let n = Number::from(7);
+    /// let x: Value = n.into();
+    /// ```
+    fn from(f: serde_json::Number) -> Self {
+        Value::Number(f)
+    }
+}
+
+impl Serialize for Value {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Bool(b) => serializer.serialize_bool(*b),
+            Self::Number(n) => n.serialize(serializer),
+            Self::String(s) => serializer.serialize_str(s),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Default, Serialize)]
 pub struct Fields {
     #[serde(flatten)]
-    pub fields: HashMap<Cow<'static, str>, serde_json::Value>,
+    pub fields: HashMap<Cow<'static, str>, Value>,
 }
 
 // list of reserved field names (case insensitive):
@@ -46,13 +149,13 @@ impl Fields {
         }
     }
 
-    pub fn record<T: Into<serde_json::Value>>(&mut self, field: &Field, value: T) {
+    pub fn record<T: Into<Value>>(&mut self, field: &Field, value: T) {
         self.fields.insert(field.name().into(), value.into());
     }
 }
 
-impl From<HashMap<Cow<'static, str>, serde_json::Value>> for Fields {
-    fn from(value: HashMap<Cow<'static, str>, serde_json::Value>) -> Self {
+impl From<HashMap<Cow<'static, str>, Value>> for Fields {
+    fn from(value: HashMap<Cow<'static, str>, Value>) -> Self {
         Self { fields: value }
     }
 }
@@ -267,7 +370,7 @@ impl Serialize for HoneycombEvent {
 }
 
 // TODO: custom value type
-pub type ExtraFields = Vec<(Cow<'static, str>, serde_json::Value)>;
+pub type ExtraFields = Vec<(Cow<'static, str>, Value)>;
 
 pub struct CreateEventsPayload<'a> {
     events: &'a Vec<HoneycombEvent>,

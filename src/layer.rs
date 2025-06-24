@@ -369,10 +369,10 @@ pub(crate) mod tests {
                 .map(|evt| (evt.fields.fields.get("overridden_field")))
                 .collect::<Vec<_>>(),
             vec![
-                (Some(&json!(or_val_e))),  // the event
-                (Some(&json!(or_val_c))),  // child_span closing
-                (Some(&json!(or_val_p))),  // parent_span closing
-                (Some(&json!(or_val_gp)))  // grandparent_span closing
+                (Some(&or_val_e.into())),  // the event
+                (Some(&or_val_c.into())),  // child_span closing
+                (Some(&or_val_p.into())),  // parent_span closing
+                (Some(&or_val_gp.into()))  // grandparent_span closing
             ]
         );
 
@@ -420,7 +420,7 @@ pub(crate) mod tests {
         let child_closing_event = events.get(1).unwrap();
         assert_eq!(
             child_closing_event.fields.fields.get("child_field"),
-            Some(&json!(42))
+            Some(&42.into())
         );
 
         let parent_closing_event = &events[2];
@@ -473,7 +473,7 @@ pub(crate) mod tests {
         let mut events = Vec::with_capacity(1);
         assert_eq!(receiver.blocking_recv_many(&mut events, 128), 3);
         let event = events[0].take().unwrap();
-        assert_eq!(event.fields.fields.get("message"), Some(&json!("message")));
+        assert_eq!(event.fields.fields.get("message"), Some(&"message".into()));
         assert_eq!(event.span_id, None);
         assert_eq!(event.parent_span_id, Some(parent_id));
     }

@@ -1,5 +1,5 @@
 use crate::{
-    ExtraFields, Url,
+    ExtraFields, Url, Value,
     background::{BackgroundTask, BackgroundTaskController},
 };
 use reqwest::header::{self, HeaderMap, HeaderName};
@@ -69,9 +69,14 @@ impl Builder {
     pub fn extra_field(
         mut self,
         field_name: Cow<'static, str>,
-        field_val: serde_json::Value,
+        // take Value rather than impl Into<Value>, because since we can't specialize
+        //  the From implementations for specific lifetimes like 'static, they allocate
+        //  even when unnecessary. Specific type hopefully cues caller to create e.g. a
+        //  Cow borrowed from an &'static str, which saves clones over the entire
+        //  lifetime of the program
+        field_val: Value,
     ) -> Self {
-        self.extra_fields.push((field_name, field_val));
+        self.extra_fields.push((field_name, field_val.into()));
         self
     }
 
