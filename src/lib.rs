@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use rand::{Rng, SeedableRng, rngs};
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use std::{
@@ -8,6 +7,7 @@ use std::{
     error,
     num::{NonZeroU64, NonZeroU128},
 };
+use time::UtcDateTime;
 use tracing::field::{Field, Visit};
 
 pub mod background;
@@ -169,7 +169,7 @@ impl Serialize for TraceId {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HoneycombEvent {
-    pub time: DateTime<Utc>,
+    pub time: UtcDateTime,
     pub span_id: Option<SpanId>,
     pub trace_id: Option<TraceId>,
     pub parent_span_id: Option<SpanId>,
@@ -194,7 +194,8 @@ impl Serialize for HoneycombEvent {
             "time",
             &self
                 .time
-                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, /* use_z */ true),
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(serde::ser::Error::custom)?,
         )?;
 
         struct InnerData<'a>(&'a HoneycombEvent);

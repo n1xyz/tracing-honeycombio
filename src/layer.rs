@@ -1,5 +1,5 @@
-use chrono::{DateTime, Utc};
 use std::{borrow::Cow, collections::HashMap, time::Instant};
+use time::UtcDateTime;
 use tokio::sync::mpsc;
 use tracing::{Level, Subscriber, span};
 use tracing_subscriber::registry::LookupSpan;
@@ -18,7 +18,7 @@ fn level_as_honeycomb_str(level: &Level) -> &'static str {
 
 struct Timings {
     start_instant: Instant,
-    start_dt: DateTime<Utc>,
+    start_dt: UtcDateTime,
     idle: u64,
     busy: u64,
     last: Instant,
@@ -28,7 +28,7 @@ struct Timings {
 impl Timings {
     fn new() -> Self {
         let start_instant = Instant::now();
-        let start_dt = Utc::now();
+        let start_dt = UtcDateTime::now();
         Self {
             start_instant,
             start_dt,
@@ -140,7 +140,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
                 .then(|| ctx.lookup_current())
                 .flatten()
         });
-        let timestamp = Utc::now();
+        let timestamp = UtcDateTime::now();
         // removed: tracing-log support by calling .normalized_metadata()
         let meta = event.metadata();
         let mut fields = Fields::new(self.extra_fields.clone());
@@ -196,7 +196,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
             busy_ns = Some(timings.busy);
             timings.start_dt
         } else {
-            Utc::now()
+            UtcDateTime::now()
         };
 
         let meta = span.metadata();
@@ -247,6 +247,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
 pub(crate) mod tests {
     use super::*;
     use serde_json::{Value, json};
+    use time::UtcDateTime;
     use tracing::Level;
     use tracing_subscriber::{Registry, layer::SubscriberExt};
 
@@ -297,7 +298,7 @@ pub(crate) mod tests {
         let (or_val_gp, or_val_p, or_val_c, or_val_e) = (0, 1, 2, 3);
         let (gp_val, p_val, c_val, e_val) = (40, 41, 42, 43);
 
-        let before = Utc::now();
+        let before = UtcDateTime::now();
         let (grandparent_id, parent_id, child_id) =
             tracing::subscriber::with_default(subscriber, || {
                 let grandparent_span = tracing::span!(
@@ -336,7 +337,7 @@ pub(crate) mod tests {
                     get_span_id(&child_span),
                 )
             });
-        let after = Utc::now();
+        let after = UtcDateTime::now();
 
         let num_events = receiver.len();
         assert_eq!(

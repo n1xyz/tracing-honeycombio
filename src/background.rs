@@ -402,7 +402,6 @@ mod tests {
         response::{IntoResponse, Response},
         routing::post,
     };
-    use chrono::Utc;
     use reqwest::StatusCode;
     use serde::Deserialize;
     use serde_json::json;
@@ -414,6 +413,7 @@ mod tests {
         sync::{Arc, Mutex, RwLock},
         task::{RawWaker, RawWakerVTable, Waker},
     };
+    use time::UtcDateTime;
     use tracing::Level;
     use tracing_mock::expect;
     use tracing_subscriber::{Layer, filter, layer::SubscriberExt};
@@ -456,7 +456,7 @@ mod tests {
 
     fn new_event(span_id: Option<u64>) -> HoneycombEvent {
         HoneycombEvent {
-            time: Utc::now(),
+            time: UtcDateTime::now(),
             span_id: span_id.map(|i| SpanId::from(NonZeroU64::new(i).unwrap())),
             trace_id: None,
             parent_span_id: None,
@@ -616,6 +616,7 @@ mod tests {
 
     #[derive(Clone, Debug, Deserialize)]
     struct WrappedEvent {
+        time: String,
         data: ApiEvent,
     }
     type DatasetPayload = Vec<WrappedEvent>;
@@ -707,6 +708,7 @@ mod tests {
         }
 
         payload.iter().for_each(|evt| {
+            tracing::debug!(ts = ?evt.time, "got span with timestamp");
             evt.data.iter().for_each(|(k, v)| {
                 assert!(
                     !matches!(
