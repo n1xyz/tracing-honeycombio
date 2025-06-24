@@ -25,6 +25,14 @@ tracing-mock = { version = "0.1.0-beta.1", features = ["tracing-subscriber"] }
 name = "simple_bench"
 harness = false
 
+[[bench]]
+name = "span_micro"
+harness = false
+
+[[bench]]
+name = "event_micro"
+harness = false
+
 [features]
 default = ["native-tls", "system-proxy"]
 
