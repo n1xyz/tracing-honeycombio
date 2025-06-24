@@ -369,7 +369,6 @@ impl Serialize for HoneycombEvent {
     }
 }
 
-// TODO: custom value type
 pub type ExtraFields = Vec<(Cow<'static, str>, Value)>;
 
 pub struct CreateEventsPayload<'a> {
