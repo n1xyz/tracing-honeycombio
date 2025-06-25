@@ -7,7 +7,6 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     collections::HashMap,
-    error,
     num::{NonZeroU64, NonZeroU128},
 };
 use time::UtcDateTime;
@@ -32,8 +31,6 @@ pub const OTEL_FIELD_TARGET: &'static str = "target";
 pub const OTEL_FIELD_TIMESTAMP: &'static str = "timestamp";
 pub const OTEL_FIELD_DURATION_MS: &'static str = "duration_ms";
 pub const OTEL_FIELD_ANNOTATION_TYPE: &'static str = "meta.annotation_type";
-pub const OTEL_FIELD_EXCEPTION_MESSAGE: &'static str = "exception.message";
-pub const OTEL_FIELD_EXCEPTION_STACKTRACE: &'static str = "exception.stacktrace";
 pub const FIELD_IDLE_NS: &'static str = "idle_ns";
 pub const FIELD_BUSY_NS: &'static str = "busy_ns";
 
@@ -195,24 +192,26 @@ impl Visit for Fields {
     fn record_str(&mut self, field: &Field, value: &str) {
         self.record(field, value);
     }
-    fn record_error(&mut self, field: &Field, value: &(dyn error::Error + 'static)) {
+    fn record_error(&mut self, field: &Field, value: &(dyn std::error::Error + 'static)) {
+        self.record(field, value.to_string());
+
         self.fields.insert(
-            Cow::Borrowed(OTEL_FIELD_EXCEPTION_MESSAGE),
-            value.to_string().into(),
+            Cow::Owned(format!("{}.debug", field.name())),
+            Value::String(Cow::Owned(format!("{:#?}", value))),
         );
 
         let mut chain: Vec<String> = Vec::new();
         let mut next_err = value.source();
+        let mut i = 0;
         while let Some(err) = next_err {
-            chain.push(err.to_string());
+            chain.push(format!("{:>4}: {}", i, err));
             next_err = err.source();
+            i += 1;
         }
         self.fields.insert(
-            Cow::Borrowed(OTEL_FIELD_EXCEPTION_STACKTRACE),
-            chain.join("\n").into(),
+            Cow::Owned(format!("{}.chain", field.name())),
+            Value::String(Cow::Owned(chain.join("\n"))),
         );
-
-        self.record_debug(field, value);
     }
 }
 

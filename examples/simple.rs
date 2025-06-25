@@ -1,7 +1,53 @@
+use std::error::Error;
+use std::fmt;
 use std::time::Duration;
-
 use tracing::Level;
 use tracing_subscriber::layer::SubscriberExt;
+
+#[derive(Debug)]
+struct ErrorA;
+
+impl fmt::Display for ErrorA {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Error A")
+    }
+}
+
+impl Error for ErrorA {}
+
+#[derive(Debug)]
+struct ErrorB {
+    source: ErrorA,
+}
+
+impl fmt::Display for ErrorB {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Error B")
+    }
+}
+
+impl Error for ErrorB {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+#[derive(Debug)]
+struct ErrorC {
+    source: ErrorB,
+}
+
+impl fmt::Display for ErrorC {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Error C")
+    }
+}
+
+impl Error for ErrorC {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -22,6 +68,13 @@ async fn main() {
         tracing::event!(tracing::Level::INFO, value = 42, "start");
         tokio::time::sleep(Duration::from_millis(100)).await;
         tracing::event!(tracing::Level::INFO, value = 42, "end");
+        let err = ErrorC {
+            source: ErrorB { source: ErrorA },
+        };
+        tracing::error!(
+            error = &err as &dyn std::error::Error,
+            "error opening nonexistant file"
+        );
     }
 
     controller.shutdown().await;
