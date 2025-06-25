@@ -32,6 +32,8 @@ pub const OTEL_FIELD_TARGET: &'static str = "target";
 pub const OTEL_FIELD_TIMESTAMP: &'static str = "timestamp";
 pub const OTEL_FIELD_DURATION_MS: &'static str = "duration_ms";
 pub const OTEL_FIELD_ANNOTATION_TYPE: &'static str = "meta.annotation_type";
+pub const OTEL_FIELD_EXCEPTION_MESSAGE: &'static str = "exception.message";
+pub const OTEL_FIELD_EXCEPTION_STACKTRACE: &'static str = "exception.stacktrace";
 pub const FIELD_IDLE_NS: &'static str = "idle_ns";
 pub const FIELD_BUSY_NS: &'static str = "busy_ns";
 
@@ -194,6 +196,22 @@ impl Visit for Fields {
         self.record(field, value);
     }
     fn record_error(&mut self, field: &Field, value: &(dyn error::Error + 'static)) {
+        self.fields.insert(
+            Cow::Borrowed(OTEL_FIELD_EXCEPTION_MESSAGE),
+            value.to_string().into(),
+        );
+
+        let mut chain: Vec<String> = Vec::new();
+        let mut next_err = value.source();
+        while let Some(err) = next_err {
+            chain.push(err.to_string());
+            next_err = err.source();
+        }
+        self.fields.insert(
+            Cow::Borrowed(OTEL_FIELD_EXCEPTION_STACKTRACE),
+            chain.join("\n").into(),
+        );
+
         self.record_debug(field, value);
     }
 }
