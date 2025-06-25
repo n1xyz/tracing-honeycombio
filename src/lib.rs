@@ -22,6 +22,19 @@ pub use builder::{
 };
 pub use reqwest::Url;
 
+pub const OTEL_FIELD_SPAN_ID: &'static str = "trace.span_id";
+pub const OTEL_FIELD_TRACE_ID: &'static str = "trace.trace_id";
+pub const OTEL_FIELD_PARENT_ID: &'static str = "trace.parent_id";
+pub const OTEL_FIELD_SERVICE_NAME: &'static str = "service.name";
+pub const OTEL_FIELD_LEVEL: &'static str = "level";
+pub const OTEL_FIELD_NAME: &'static str = "name";
+pub const OTEL_FIELD_TARGET: &'static str = "target";
+pub const OTEL_FIELD_TIMESTAMP: &'static str = "timestamp";
+pub const OTEL_FIELD_DURATION_MS: &'static str = "duration_ms";
+pub const OTEL_FIELD_ANNOTATION_TYPE: &'static str = "meta.annotation_type";
+pub const FIELD_IDLE_NS: &'static str = "idle_ns";
+pub const FIELD_BUSY_NS: &'static str = "busy_ns";
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Value {
     // fields whose value is `null` seem to be ignored by Honeycomb, so no Null variant
@@ -150,7 +163,8 @@ impl Fields {
     }
 
     pub fn record<T: Into<Value>>(&mut self, field: &Field, value: T) {
-        self.fields.insert(field.name().into(), value.into());
+        self.fields
+            .insert(Cow::Borrowed(field.name()), value.into());
     }
 }
 
@@ -180,7 +194,7 @@ impl Visit for Fields {
         self.record(field, value);
     }
     fn record_error(&mut self, field: &Field, value: &(dyn error::Error + 'static)) {
-        self.record(field, format!("{}", value));
+        self.record_debug(field, value);
     }
 }
 
@@ -304,32 +318,32 @@ impl HoneycombEvent {
         m: &mut M,
     ) -> Result<(), <M as SerializeMap>::Error> {
         if let Some(ref span_id) = self.span_id {
-            m.serialize_entry("trace.span_id", span_id)?;
+            m.serialize_entry(OTEL_FIELD_SPAN_ID, span_id)?;
         }
         if let Some(ref trace_id) = self.trace_id {
-            m.serialize_entry("trace.trace_id", trace_id)?;
+            m.serialize_entry(OTEL_FIELD_TRACE_ID, trace_id)?;
         }
         if let Some(ref parent_span_id) = self.parent_span_id {
-            m.serialize_entry("trace.parent_id", parent_span_id)?;
+            m.serialize_entry(OTEL_FIELD_PARENT_ID, parent_span_id)?;
         }
         if let Some(ref service_name) = self.service_name {
-            m.serialize_entry("service.name", service_name)?;
+            m.serialize_entry(OTEL_FIELD_SERVICE_NAME, service_name)?;
         }
         if let Some(ref annotation_type) = self.annotation_type {
-            m.serialize_entry("meta.annotation_type", annotation_type)?;
+            m.serialize_entry(OTEL_FIELD_ANNOTATION_TYPE, annotation_type)?;
         }
         if let Some(ref duration_ms) = self.duration_ms {
-            m.serialize_entry("duration_ms", duration_ms)?;
+            m.serialize_entry(OTEL_FIELD_DURATION_MS, duration_ms)?;
         }
         if let Some(ref idle_ns) = self.idle_ns {
-            m.serialize_entry("duration_ms", idle_ns)?;
+            m.serialize_entry(FIELD_IDLE_NS, idle_ns)?;
         }
         if let Some(ref busy_ns) = self.busy_ns {
-            m.serialize_entry("duration_ms", busy_ns)?;
+            m.serialize_entry(FIELD_BUSY_NS, busy_ns)?;
         }
-        m.serialize_entry("level", self.level)?;
-        m.serialize_entry("name", self.name.as_ref())?;
-        m.serialize_entry("target", self.target.as_ref())?;
+        m.serialize_entry(OTEL_FIELD_LEVEL, self.level)?;
+        m.serialize_entry(OTEL_FIELD_NAME, self.name.as_ref())?;
+        m.serialize_entry(OTEL_FIELD_TARGET, self.target.as_ref())?;
         for (k, v) in self.fields.fields.iter() {
             m.serialize_entry(k, v)?;
         }

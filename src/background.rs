@@ -406,11 +406,8 @@ impl BackgroundTaskController {
 mod tests {
     use super::*;
     use crate::{
-        CreateEventsPayload, HONEYCOMB_AUTH_HEADER_NAME, SpanId,
-        builder::DEFAULT_CHANNEL_SIZE,
-        layer::tests::{
-            OTEL_FIELD_LEVEL, OTEL_FIELD_PARENT_ID, OTEL_FIELD_SPAN_ID, OTEL_FIELD_TRACE_ID,
-        },
+        CreateEventsPayload, HONEYCOMB_AUTH_HEADER_NAME, OTEL_FIELD_LEVEL, OTEL_FIELD_PARENT_ID,
+        OTEL_FIELD_SPAN_ID, OTEL_FIELD_TRACE_ID, SpanId, builder::DEFAULT_CHANNEL_SIZE,
     };
     use axum::{
         Json, Router,

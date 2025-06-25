@@ -242,19 +242,16 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::{
+        OTEL_FIELD_LEVEL, OTEL_FIELD_PARENT_ID, OTEL_FIELD_SERVICE_NAME, OTEL_FIELD_SPAN_ID,
+        OTEL_FIELD_TIMESTAMP,
+    };
+
     use super::*;
     use serde_json::{Value, json};
     use time::UtcDateTime;
     use tracing::Level;
     use tracing_subscriber::{Registry, layer::SubscriberExt};
-
-    pub(crate) const OTEL_FIELD_SPAN_ID: &'static str = "trace.span_id";
-    pub(crate) const OTEL_FIELD_TRACE_ID: &'static str = "trace.trace_id";
-    pub(crate) const OTEL_FIELD_PARENT_ID: &'static str = "trace.parent_id";
-    pub(crate) const OTEL_FIELD_SERVICE_NAME: &'static str = "service.name";
-    pub(crate) const OTEL_FIELD_LEVEL: &'static str = "level";
-    pub(crate) const OTEL_FIELD_TIMESTAMP: &'static str = "timestamp";
-    // const OTEL_FIELD_DURATION_MS: &'static str = "duration_ms";
 
     fn check_ev_map_depth_one(ev_map: &serde_json::Map<String, Value>) {
         for (key, val) in ev_map.iter() {
