@@ -27,6 +27,8 @@
         devShell = pkgs.mkShell {
           packages = with pkgs; [
             rust
+            openssl
+            pkg-config
           ];
           #RUST_SRC_PATH = "${rust}/lib/rustlib/src/rust/library/";
         };
