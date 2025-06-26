@@ -1,6 +1,6 @@
 use quanta::Instant;
 use std::borrow::Cow;
-use time::UtcDateTime;
+use time::{OffsetDateTime, UtcDateTime};
 use tokio::sync::mpsc;
 use tracing::{Level, Subscriber, span};
 use tracing_subscriber::registry::LookupSpan;
@@ -19,7 +19,7 @@ fn level_as_honeycomb_str(level: &Level) -> &'static str {
 
 struct Timings {
     start_instant: Instant,
-    start_dt: UtcDateTime,
+    start_dt: OffsetDateTime,
     idle: u64,
     busy: u64,
     last: Instant,
@@ -29,7 +29,7 @@ struct Timings {
 impl Timings {
     fn new() -> Self {
         let start_instant = Instant::now();
-        let start_dt = UtcDateTime::now();
+        let start_dt = OffsetDateTime::now_utc();
         Self {
             start_instant,
             start_dt,
@@ -137,7 +137,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
                 .then(|| ctx.lookup_current())
                 .flatten()
         });
-        let timestamp = UtcDateTime::now();
+        let timestamp = OffsetDateTime::now_utc();
         // removed: tracing-log support by calling .normalized_metadata()
         let meta = event.metadata();
         let mut fields = Fields::new();
@@ -193,7 +193,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
             busy_ns = Some(timings.busy);
             timings.start_dt
         } else {
-            UtcDateTime::now()
+            OffsetDateTime::now_utc()
         };
 
         let meta = span.metadata();

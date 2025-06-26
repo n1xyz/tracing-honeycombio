@@ -9,7 +9,7 @@ use std::{
     collections::HashMap,
     num::{NonZeroU64, NonZeroU128},
 };
-use time::UtcDateTime;
+use time::OffsetDateTime;
 use tracing::field::{Field, Visit};
 
 pub mod background;
@@ -314,7 +314,7 @@ impl Serialize for TraceId {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HoneycombEvent {
-    pub time: UtcDateTime,
+    pub time: OffsetDateTime,
     pub span_id: Option<SpanId>,
     pub trace_id: Option<TraceId>,
     pub parent_span_id: Option<SpanId>,

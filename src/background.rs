@@ -428,7 +428,7 @@ mod tests {
         sync::{Arc, Mutex, RwLock},
         task::{RawWaker, RawWakerVTable, Waker},
     };
-    use time::UtcDateTime;
+    use time::{OffsetDateTime, UtcDateTime};
     use tracing::Level;
     use tracing_mock::expect;
     use tracing_subscriber::{Layer, filter, layer::SubscriberExt};
@@ -471,7 +471,7 @@ mod tests {
 
     fn new_event(span_id: Option<u64>) -> HoneycombEvent {
         HoneycombEvent {
-            time: UtcDateTime::now(),
+            time: OffsetDateTime::now_utc(),
             span_id: span_id.map(|i| SpanId::from(NonZeroU64::new(i).unwrap())),
             trace_id: None,
             parent_span_id: None,
