@@ -428,7 +428,7 @@ mod tests {
         sync::{Arc, Mutex, RwLock},
         task::{RawWaker, RawWakerVTable, Waker},
     };
-    use time::{OffsetDateTime, UtcDateTime};
+    use time::OffsetDateTime;
     use tracing::Level;
     use tracing_mock::expect;
     use tracing_subscriber::{Layer, filter, layer::SubscriberExt};

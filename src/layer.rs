@@ -1,6 +1,6 @@
 use quanta::Instant;
 use std::borrow::Cow;
-use time::{OffsetDateTime, UtcDateTime};
+use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tracing::{Level, Subscriber, span};
 use tracing_subscriber::registry::LookupSpan;
@@ -249,7 +249,6 @@ pub(crate) mod tests {
 
     use super::*;
     use serde_json::{Value, json};
-    use time::UtcDateTime;
     use tracing::Level;
     use tracing_subscriber::{Registry, layer::SubscriberExt};
 
@@ -288,7 +287,7 @@ pub(crate) mod tests {
         let (or_val_gp, or_val_p, or_val_c, or_val_e) = (0, 1, 2, 3);
         let (gp_val, p_val, c_val, e_val) = (40, 41, 42, 43);
 
-        let before = UtcDateTime::now();
+        let before = OffsetDateTime::now_utc();
         let (grandparent_id, parent_id, child_id) =
             tracing::subscriber::with_default(subscriber, || {
                 let grandparent_span = tracing::span!(
@@ -327,7 +326,7 @@ pub(crate) mod tests {
                     get_span_id(&child_span),
                 )
             });
-        let after = UtcDateTime::now();
+        let after = OffsetDateTime::now_utc();
 
         let num_events = receiver.len();
         assert_eq!(
