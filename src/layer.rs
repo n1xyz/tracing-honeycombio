@@ -81,7 +81,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         let trace_id = span
             .parent()
             .and_then(|p| p.extensions().get::<TraceId>().copied())
-            .unwrap_or_else(|| TraceId::generate());
+            .unwrap_or_else(TraceId::generate);
         extensions.insert(trace_id);
         extensions.insert(SpanId::generate());
     }
@@ -373,7 +373,7 @@ pub(crate) mod tests {
         );
 
         let log_event = &events[0];
-        let root = match serde_json::to_value(&log_event).unwrap() {
+        let root = match serde_json::to_value(log_event).unwrap() {
             Value::Object(root) => root,
             val => panic!(
                 "expected event to serialize into map, instead got {:#?}",
@@ -384,7 +384,7 @@ pub(crate) mod tests {
             Value::Object(data) => data,
             _ => panic!("data key has unexpected type"),
         };
-        check_ev_map_depth_one(&ev_map);
+        check_ev_map_depth_one(ev_map);
 
         assert_eq!(ev_map.get(OTEL_FIELD_SPAN_ID), None);
         assert_eq!(ev_map.get(OTEL_FIELD_PARENT_ID), Some(&json!(child_id)));
@@ -420,7 +420,7 @@ pub(crate) mod tests {
         );
 
         let parent_closing_event = &events[2];
-        let root = match serde_json::to_value(&parent_closing_event).unwrap() {
+        let root = match serde_json::to_value(parent_closing_event).unwrap() {
             Value::Object(root) => root,
             val => panic!(
                 "expected event to serialize into map, instead got {:#?}",
@@ -431,7 +431,7 @@ pub(crate) mod tests {
             Value::Object(data) => data,
             _ => panic!("data key has unexpected type"),
         };
-        check_ev_map_depth_one(&ev_map);
+        check_ev_map_depth_one(ev_map);
 
         assert_eq!(ev_map.get(OTEL_FIELD_SPAN_ID), Some(&json!(parent_id)));
         assert_eq!(

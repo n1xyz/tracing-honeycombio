@@ -182,8 +182,8 @@ where
         }
 
         {
-            let mut msgs_iter = recvd.drain(..);
-            while let Some(msg) = msgs_iter.next() {
+            let msgs_iter = recvd.drain(..);
+            for msg in msgs_iter {
                 match msg {
                     Some(event) => self.inflight_reqs.push(event),
                     None => {
@@ -218,8 +218,8 @@ where
             ..
         } = &mut *self;
         let fut = backend.submit_events(CreateEventsPayload {
-            events: &inflight_reqs,
-            extra_fields: &extra_fields,
+            events: inflight_reqs,
+            extra_fields,
         });
         State::Inflight(InflightState { send_task: fut })
     }
@@ -630,12 +630,12 @@ mod tests {
         assert_eq!(Pin::new(&mut task).poll(&mut cx), Poll::Ready(()));
     }
 
-    const MOCK_API_KEY: &'static str = "xxx-testing-api-key-xxx";
-    const TESTING_HEADER_NAME: &'static str = "x-tested-header";
-    const TESTING_HEADER_VALUE: &'static str = "tested-header-value";
-    const TEST_EXTRA_FIELD_NAME: &'static str = "test.extra_field";
-    const TEST_EXTRA_FIELD_VALUE: &'static str = "extra_field_val";
-    const TESTING_DATASET: &'static str = "testdataset";
+    const MOCK_API_KEY: &str = "xxx-testing-api-key-xxx";
+    const TESTING_HEADER_NAME: &str = "x-tested-header";
+    const TESTING_HEADER_VALUE: &str = "tested-header-value";
+    const TEST_EXTRA_FIELD_NAME: &str = "test.extra_field";
+    const TEST_EXTRA_FIELD_VALUE: &str = "extra_field_val";
+    const TESTING_DATASET: &str = "testdataset";
 
     type ApiEvent = HashMap<String, serde_json::Value>;
     type Dataset = Vec<ApiEvent>;
