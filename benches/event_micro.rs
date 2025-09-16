@@ -52,9 +52,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     // note: work neeeded if criterion.rs ever starts using tracing internally
     c.bench_function("single_event", |b| {
         b.iter_custom(|iters| {
-            let mut extra_fields: Vec<(Cow<'static, str>, Value)> = Vec::new();
-            extra_fields.push(("field1".into(), Cow::Borrowed("value1").into()));
-            extra_fields.push(("field2".into(), "longer val".repeat(4).into()));
+            let extra_fields: Vec<(Cow<'static, str>, Value)> = vec![
+                ("field1".into(), Cow::Borrowed("value1").into()),
+                ("field2".into(), "longer val".repeat(4).into()),
+            ];
 
             let (sender, receiver) = mpsc::channel(DEFAULT_CHANNEL_SIZE);
             let layer = tracing_honeycombio::layer::Layer::new(
@@ -92,6 +93,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     last = Instant::now();
                 }
                 sender.blocking_send(None).unwrap();
+                #[allow(clippy::while_let_loop)]
                 loop {
                     // we won't panic on tokio sleep() creation without active runtime
                     // because backend always returns Ok so no backoff needed

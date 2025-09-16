@@ -6,10 +6,10 @@ use reqwest::header::{self, HeaderMap, HeaderName};
 use std::borrow::Cow;
 use tokio::sync::mpsc;
 
-pub const HONEYCOMB_SERVER_US: &'static str = "https://api.honeycomb.io/";
-pub const HONEYCOMB_SERVER_EU: &'static str = "https://api.eu1.honeycomb.io/";
+pub const HONEYCOMB_SERVER_US: &str = "https://api.honeycomb.io/";
+pub const HONEYCOMB_SERVER_EU: &str = "https://api.eu1.honeycomb.io/";
 
-pub const HONEYCOMB_AUTH_HEADER_NAME: &'static str = "x-honeycomb-team";
+pub const HONEYCOMB_AUTH_HEADER_NAME: &str = "x-honeycomb-team";
 
 pub const DEFAULT_CHANNEL_SIZE: usize = 1024;
 
@@ -19,6 +19,7 @@ pub struct Builder {
     pub service_name: Option<Cow<'static, str>>,
     pub extra_fields: ExtraFields,
     pub http_headers: reqwest::header::HeaderMap,
+
     pub event_channel_size: usize,
 }
 
@@ -76,7 +77,7 @@ impl Builder {
         //  lifetime of the program
         field_val: Value,
     ) -> Self {
-        self.extra_fields.push((field_name, field_val.into()));
+        self.extra_fields.push((field_name, field_val));
         self
     }
 

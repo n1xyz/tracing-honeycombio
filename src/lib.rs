@@ -21,18 +21,18 @@ pub use builder::{
 };
 pub use reqwest::Url;
 
-pub const OTEL_FIELD_SPAN_ID: &'static str = "trace.span_id";
-pub const OTEL_FIELD_TRACE_ID: &'static str = "trace.trace_id";
-pub const OTEL_FIELD_PARENT_ID: &'static str = "trace.parent_id";
-pub const OTEL_FIELD_SERVICE_NAME: &'static str = "service.name";
-pub const OTEL_FIELD_LEVEL: &'static str = "level";
-pub const OTEL_FIELD_NAME: &'static str = "name";
-pub const OTEL_FIELD_TARGET: &'static str = "target";
-pub const OTEL_FIELD_TIMESTAMP: &'static str = "timestamp";
-pub const OTEL_FIELD_DURATION_MS: &'static str = "duration_ms";
-pub const OTEL_FIELD_ANNOTATION_TYPE: &'static str = "meta.annotation_type";
-pub const FIELD_IDLE_NS: &'static str = "idle_ns";
-pub const FIELD_BUSY_NS: &'static str = "busy_ns";
+pub const OTEL_FIELD_SPAN_ID: &str = "trace.span_id";
+pub const OTEL_FIELD_TRACE_ID: &str = "trace.trace_id";
+pub const OTEL_FIELD_PARENT_ID: &str = "trace.parent_id";
+pub const OTEL_FIELD_SERVICE_NAME: &str = "service.name";
+pub const OTEL_FIELD_LEVEL: &str = "level";
+pub const OTEL_FIELD_NAME: &str = "name";
+pub const OTEL_FIELD_TARGET: &str = "target";
+pub const OTEL_FIELD_TIMESTAMP: &str = "timestamp";
+pub const OTEL_FIELD_DURATION_MS: &str = "duration_ms";
+pub const OTEL_FIELD_ANNOTATION_TYPE: &str = "meta.annotation_type";
+pub const FIELD_IDLE_NS: &str = "idle_ns";
+pub const FIELD_BUSY_NS: &str = "busy_ns";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Value {
@@ -102,7 +102,7 @@ impl From<&str> for Value {
 // we sacrifice generality here to prevent the footgun of
 //  Cow<'static, str>::Borrowed(&'static str)::into() silently
 //  converting into Cow::Owned
-impl<'a> From<Cow<'static, str>> for Value {
+impl From<Cow<'static, str>> for Value {
     fn from(f: Cow<'static, str>) -> Self {
         Value::String(f)
     }
